@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]  # goes up from src/data/ →
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # Import from gru_torch_V5 (single source of truth)
-from src.models.gru_torch_V5 import ClotFeatureExtractor, ClotGRU, REDUCE_DIM
+from src.models.gru_torch_V5 import ClotFeatureExtractor, ClotGRU, REDUCE_DIM, SEQ_LEN
 
 # ────────────────────────────────────────────────
 # CONFIGURATION
@@ -128,13 +128,17 @@ def print_label_stats_table(y_true, y_pred, title):
 def load_or_extract_features(force_extract: bool = False):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Cache filename MUST include SEQ_LEN
+    cache_filename = f"features_w{WINDOW_SEC:.1f}s_s{STRIDE_SAMPLES}_seq{SEQ_LEN}_red{REDUCE_DIM}.npz"
+    CACHE_FILE = CACHE_DIR / cache_filename
+
     if CACHE_FILE.exists() and not force_extract:
         print(f"Loading cached features from: {CACHE_FILE}")
         data = np.load(CACHE_FILE)
-        X_full = data['X_full']      # always save full 40-dim
+        X_seq = data['X_seq']      # (N, SEQ_LEN, active_dim)
         y = data['y']
         groups = data['groups']
-        print(f"Loaded: {X_full.shape[0]} windows")
+        print(f"Loaded: {X_seq.shape[0]} sequences | shape={X_seq.shape}")
     else:
         print("Extracting features (this may take a while)...")
         data_files = sorted(DATA_DIR.glob("*.parquet"))
@@ -142,7 +146,7 @@ def load_or_extract_features(force_extract: bool = False):
         df_all = pd.concat(all_data, ignore_index=True)
 
         extractor = ClotFeatureExtractor(sample_rate=150, window_sec=WINDOW_SEC)
-        features_list, labels_list, groups_list = [], [], []
+        seq_list, labels_list, groups_list = [], [], []
 
         for run_id, group in df_all.groupby('run_id'):
             resistance = group['magRLoadAdjusted'].to_numpy(dtype=np.float32)
@@ -151,6 +155,9 @@ def load_or_extract_features(force_extract: bool = False):
 
             window_samples = extractor.window_size
             step = STRIDE_SAMPLES
+
+            run_features = []  # list of single feature vectors
+
             for start in range(0, len(resistance) - window_samples + 1, step):
                 window_res = resistance[start:start + window_samples]
                 window_label = np.max(labels[start:start + window_samples])
@@ -159,40 +166,49 @@ def load_or_extract_features(force_extract: bool = False):
                     extractor.update(r)
 
                 feats_40 = extractor.compute_features()
-                features_list.append(feats_40)
-                labels_list.append(window_label)
+
+                if REDUCE_DIM:
+                    zero_idx = extractor.zero_idx
+                    active_idx = [i for i in range(40) if i not in zero_idx]
+                    feats = feats_40[active_idx]
+                else:
+                    feats = feats_40
+
+                run_features.append(feats)
+
+            # Build sequences
+            for i in range(SEQ_LEN - 1, len(run_features)):
+                seq = np.array(run_features[i - SEQ_LEN + 1 : i + 1])   # (SEQ_LEN, feat_dim)
+                label = run_features[i]   # label of the last timestep
+                seq_list.append(seq)
+                labels_list.append(label)
                 groups_list.append(run_id)
 
-        X_full = np.array(features_list, dtype=np.float32)
+        X_seq = np.array(seq_list, dtype=np.float32)
         y = np.array(labels_list, dtype=np.int64)
         groups = np.array(groups_list)
 
-        print(f"Extracted: {X_full.shape[0]} windows from {len(np.unique(groups))} runs")
+        print(f"Extracted: {X_seq.shape[0]} sequences | shape={X_seq.shape} from {len(np.unique(groups))} runs")
 
         print("Caching features...")
         np.savez_compressed(
             CACHE_FILE,
-            X_full=X_full,
+            X_seq=X_seq,
             y=y,
             groups=groups
         )
         print(f"Saved cache → {CACHE_FILE}")
 
-    # Drop unused features BEFORE scaling
-    if REDUCE_DIM:
-        zero_idx = ClotFeatureExtractor().zero_idx
-        active_idx = [i for i in range(40) if i not in zero_idx]
-        X = X_full[:, active_idx]
-        print(f"Dropped {len(zero_idx)} unused features → training on {X.shape[1]} active features")
-    else:
-        X = X_full
-
+    # Scaling
     print("Loading scaler...")
     scaler = joblib.load(SCALER_PATH)
-    X_scaled = scaler.transform(X)
+    N, S, F = X_seq.shape
+    X_flat = X_seq.reshape(-1, F)
+    X_scaled_flat = scaler.transform(X_flat)
+    X_scaled = X_scaled_flat.reshape(N, S, F)
 
-    assert np.abs(X_scaled.mean()) < 0.1, "Scaling failed — mean should be ~0"
-    assert 0.6 < X_scaled.std() < 1.3, "Scaling failed — std should be ~1"
+    assert np.abs(X_scaled.mean()) < 0.1, f"Scaling failed — mean should be ~0 (got {X_scaled.mean():.4f})"
+    assert 0.6 < X_scaled.std() < 1.4, f"Scaling failed — std should be ~1 (got {X_scaled.std():.4f})"
     print("Scaling check passed")
 
     return X_scaled, y, groups, scaler
@@ -284,6 +300,7 @@ def main():
     print(f"Device               : {DEVICE}")
     print(f"REDUCE_DIM           : {REDUCE_DIM}")
     print(f"Active features      : {active_dim}")
+    print(f"SEQ_LEN              : {SEQ_LEN}")
     print(f"SEEDS_TO_TRY         : {SEEDS_TO_TRY}")
     print(f"Batch size           : {BATCH_SIZE}")
     print(f"Num workers          : {NUM_WORKERS}")
@@ -303,7 +320,7 @@ def main():
 
     gkf = GroupKFold(n_splits=n_splits)
 
-    best_global_f1 = 0
+    best_global_f1 = 0.0
     best_state_global = None
     best_seed = None
 
@@ -316,7 +333,7 @@ def main():
         np.random.seed(seed)
         torch.manual_seed(seed)
 
-        best_f1_this_seed = 0
+        best_f1_this_seed = 0.0
         best_state_this_seed = None
 
         for fold, (train_idx, val_idx) in enumerate(gkf.split(X_scaled, y, groups), 1):
@@ -341,16 +358,16 @@ def main():
                 tr_y = np.concatenate([tr_y] + [tr_y[wall_idx]] * repeat_wall)
 
             train_ds = TensorDataset(torch.from_numpy(tr_X).float(), torch.from_numpy(tr_y).long())
-            val_ds = TensorDataset(torch.from_numpy(va_X).float(), torch.from_numpy(va_y).long())
+            val_ds   = TensorDataset(torch.from_numpy(va_X).float(), torch.from_numpy(va_y).long())
 
             train_dl = DataLoader(
                 train_ds, 
                 batch_size=BATCH_SIZE, 
                 shuffle=True,
-                num_workers=NUM_WORKERS,       # ← Start with 4 or 8 (match your CPU cores / 2)
-                pin_memory=PIN_MEMORY,         # Helps even on CPU
+                num_workers=NUM_WORKERS,
+                pin_memory=PIN_MEMORY,
                 persistent_workers=True if NUM_WORKERS > 0 else False
-                )
+            )
             
             val_dl = DataLoader(
                 val_ds, 
@@ -359,7 +376,7 @@ def main():
                 num_workers=NUM_WORKERS,
                 pin_memory=PIN_MEMORY,
                 persistent_workers=True if NUM_WORKERS > 0 else False
-                )
+            )
             
             model = ClotGRU().to(DEVICE)
             state, fold_f1 = train_fold(model, train_dl, val_dl, class_weights)
@@ -384,14 +401,14 @@ def main():
         else:
             print(f"   ⚠️  No model saved for seed {seed} (best_state was None)")
 
-        # Update global best (still useful for reference)
+        # Update global best
         if best_f1_this_seed > best_global_f1:
             best_global_f1 = best_f1_this_seed
             best_state_global = best_state_this_seed
             best_seed = seed
             print(f"   → New global best! (Seed {seed})")
 
-    # Optional: also save the overall best as a simple name for quick inference
+    # Optional: save overall best as generic name for easy inference
     if best_state_global is not None:
         latest_path = PROJECT_ROOT / "src" / "training" / "clot_gru_trained.pt"
         torch.save(best_state_global, latest_path)

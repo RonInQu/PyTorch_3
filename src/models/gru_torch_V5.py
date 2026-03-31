@@ -23,6 +23,8 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 # ────────────────────────────────────────────────
 # CONFIG — Single source of truth
 # ────────────────────────────────────────────────
+SEQ_LEN = 8
+
 REDUCE_DIM = True
 WINDOW_SEC = 5.0
 REPORT_INTERVAL_MS = 200
@@ -160,7 +162,7 @@ class ClotGRU(nn.Module):
         nn.init.zeros_(self.fc2.bias)
 
     def forward(self, x, hidden=None):
-        x = x.unsqueeze(1)
+        # x shape: (batch, SEQ_LEN, input_size)
         out, hidden = self.gru(x, hidden)
         out = out[:, -1]
         out = torch.relu(self.fc1(out))
@@ -180,10 +182,13 @@ class LiveClotDetector:
 
         self.hidden = None
         self.posterior = np.array([0.95, 0.025, 0.025], dtype=np.float32)
+        
+        # NEW: Feature history buffer for SEQ_LEN
+        self.feat_history = deque(maxlen=SEQ_LEN)   # will store scaled active features
 
     @torch.no_grad()
     def predict(self, raw_feats_40, da_label=None):
-        # Drop unused features before scaling when REDUCE_DIM=True
+        # Drop unused features before scaling
         if REDUCE_DIM:
             zero_idx = ClotFeatureExtractor().zero_idx
             active_idx = [i for i in range(40) if i not in zero_idx]
@@ -192,7 +197,19 @@ class LiveClotDetector:
             feats_active = raw_feats_40
 
         scaled = self.scaler.transform(feats_active.reshape(1, -1))[0]
-        x = torch.from_numpy(scaled).float().unsqueeze(0).to(DEVICE)
+
+        # Add current scaled features to history buffer
+        self.feat_history.append(scaled)
+
+        # If history is not full yet, pad with the first available feature
+        if len(self.feat_history) < SEQ_LEN:
+            pad = list(self.feat_history)[0] if self.feat_history else scaled
+            seq_list = [pad] * (SEQ_LEN - len(self.feat_history)) + list(self.feat_history)
+        else:
+            seq_list = list(self.feat_history)
+
+        seq = np.array(seq_list, dtype=np.float32)   # (SEQ_LEN, feat_size)
+        x = torch.from_numpy(seq).float().unsqueeze(0).to(DEVICE)  # (1, SEQ_LEN, feat_size)
 
         logits, self.hidden = self.model(x, self.hidden)
         if self.hidden is not None:
@@ -203,12 +220,13 @@ class LiveClotDetector:
         prior_idx = np.argmax(self.posterior)
         
         if da_label is not None:
-            if da_label == 0:
+            if da_label == 0:  # DA says blood → force blood and reset everything
                 self.posterior = np.array([0.98, 0.01, 0.01], dtype=np.float32)
                 self.hidden = None
+                self.feat_history.clear()          # ← Important: reset history
                 return self.posterior.copy()
             
-            elif da_label in (1, 2):
+            elif da_label in (1, 2):  # DA says clot or wall
                 da_probs = np.array([0.0, 0.0, 0.0], dtype=np.float32)
                 da_probs[da_label] = 0.92
                 da_probs[0] = 0.04
@@ -232,6 +250,7 @@ class LiveClotDetector:
         
         if da_label == 0:
             self.posterior = np.array([1.0, 0.0, 0.0])
+            self.feat_history.clear()
         
         if da_label in (1, 2):
             final_idx = np.argmax(self.posterior)
