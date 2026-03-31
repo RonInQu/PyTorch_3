@@ -1,0 +1,57 @@
+# Python / TensorFlow ignores
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdf
+.venv/
+venv/
+env/
+
+# Large artifacts – NEVER commit these!
+*.pkl
+*.pt
+*.pickle
+*.joblib
+*.h5
+*.keras
+*.tflite
+*.pb
+
+inference_deploy/*.keras
+inference_deploy/*.pkl
+inference_deploy/*.pt
+src/data/*.pkl
+src/training/*.pkl
+src/training/*.pt
+src/models/*.json
+
+# Others
+*.docx
+*.odt
+*.txt
+*.md
+*.png
+*.jpg
+*.log
+*.csv
+*.onnx
+*.data
+*.onnx.data
+*.json
+*.npz
+
+# Editors
+.ipynb_checkpoints/
+.spyderproject
+.spyproject
+
+# Large test and training data – NEVER commit!
+*.parquet
+test_data/
+training_data/
+# data/processed/           # if you have large processed data here too
+# data/raw/                 # if you later add raw data
+*.zip
+.DS_Store
+snippet_visualization.gif
