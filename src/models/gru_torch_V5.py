@@ -130,7 +130,7 @@ class ClotFeatureExtractor:
 active_dim = 40 - len(ClotFeatureExtractor().zero_idx) if REDUCE_DIM else 40
 dim_str = f"red{active_dim}" if REDUCE_DIM else "40"
 
-SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_{dim_str}.pkl"
+SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
 MODEL_PATH = PROJECT_ROOT / "src" / "training" / "clot_gru_trained.pt"
 TEST_DATA_DIR = PROJECT_ROOT / "test_data"
 OUTPUT_FOLDER = PROJECT_ROOT / "inference_deploy" / "Results"
@@ -221,7 +221,7 @@ class LiveClotDetector:
         
         if da_label is not None:
             if da_label == 0:  # DA says blood → force blood and reset everything
-                self.posterior = np.array([0.98, 0.01, 0.01], dtype=np.float32)
+                self.posterior = np.array([1.0, 0.0, 0.0], dtype=np.float32)
                 self.hidden = None
                 self.feat_history.clear()          # ← Important: reset history
                 return self.posterior.copy()
@@ -246,11 +246,7 @@ class LiveClotDetector:
             else:
                 alpha_history, alpha_new = 0.96, 0.04
         
-        self.posterior = alpha_history * self.posterior + alpha_new * probs
-        
-        if da_label == 0:
-            self.posterior = np.array([1.0, 0.0, 0.0])
-            self.feat_history.clear()
+        self.posterior = alpha_history * self.posterior + alpha_new * probs       
         
         if da_label in (1, 2):
             final_idx = np.argmax(self.posterior)
@@ -416,8 +412,6 @@ def process_file(filepath: Path,
         # Collect for global summary (only if ground truth & DA exist)
         if gt_labels is not None and da_labels is not None:
             # Interpolate ML predictions to full sampling points
-            interp_ml = np.interp(full_times, results_df['time'], results_df['prediction'])
-            interp_ml = np.round(interp_ml).astype(int)
     
             # Append to global lists
             all_gt_labels.extend(gt)

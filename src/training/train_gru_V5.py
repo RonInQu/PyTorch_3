@@ -32,7 +32,7 @@ from src.models.gru_torch_V5 import ClotFeatureExtractor, ClotGRU, REDUCE_DIM, S
 # ────────────────────────────────────────────────
 
 # SEEDS_TO_TRY = [456, 123, 42]        # ← Add more seeds here if desired
-SEEDS_TO_TRY = [456, 127]
+SEEDS_TO_TRY = [456]
 
 WINDOW_SEC = 5.0
 STRIDE_SAMPLES = 30
@@ -54,7 +54,6 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 os.environ["PYARROW_IGNORE_TIMEZONE"] = "1"
 
 # Paths
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "training_data"
 TEST_DIR = PROJECT_ROOT / "test_data"
 
@@ -62,9 +61,9 @@ TEST_DIR = PROJECT_ROOT / "test_data"
 active_dim = 40 - len(ClotFeatureExtractor().zero_idx) if REDUCE_DIM else 40
 dim_str = f"red{active_dim}" if REDUCE_DIM else "40"
 
-SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_{dim_str}.pkl"
+SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
 CACHE_DIR = PROJECT_ROOT / "cache"
-CACHE_FILE = CACHE_DIR / f"features_w{WINDOW_SEC:.1f}s_s{STRIDE_SAMPLES}_red{REDUCE_DIM}.npz"
+CACHE_FILE = CACHE_DIR / f"features_w{WINDOW_SEC:.1f}s_s{STRIDE_SAMPLES}_seq{SEQ_LEN}_red{REDUCE_DIM}.npz"
 
 CLASS_NAMES = ['blood', 'clot', 'wall']
 CLINICAL_WEIGHTS = [1.0, 1.0, 1.0]
@@ -128,15 +127,14 @@ def print_label_stats_table(y_true, y_pred, title):
 def load_or_extract_features(force_extract: bool = False):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Cache filename MUST include SEQ_LEN
     cache_filename = f"features_w{WINDOW_SEC:.1f}s_s{STRIDE_SAMPLES}_seq{SEQ_LEN}_red{REDUCE_DIM}.npz"
     CACHE_FILE = CACHE_DIR / cache_filename
 
     if CACHE_FILE.exists() and not force_extract:
         print(f"Loading cached features from: {CACHE_FILE}")
         data = np.load(CACHE_FILE)
-        X_seq = data['X_seq']      # (N, SEQ_LEN, active_dim)
-        y = data['y']
+        X_seq = data['X_seq']           # (N, SEQ_LEN, active_dim)
+        y = data['y'].astype(np.int64)  # Force integer labels
         groups = data['groups']
         print(f"Loaded: {X_seq.shape[0]} sequences | shape={X_seq.shape}")
     else:
@@ -146,21 +144,27 @@ def load_or_extract_features(force_extract: bool = False):
         df_all = pd.concat(all_data, ignore_index=True)
 
         extractor = ClotFeatureExtractor(sample_rate=150, window_sec=WINDOW_SEC)
-        seq_list, labels_list, groups_list = [], [], []
+        seq_list = []
+        labels_list = []
+        groups_list = []
 
         for run_id, group in df_all.groupby('run_id'):
             resistance = group['magRLoadAdjusted'].to_numpy(dtype=np.float32)
-            labels = group['label'].values
+            label_array = group['label'].values.astype(np.int64)
+
             extractor.reset()
 
             window_samples = extractor.window_size
             step = STRIDE_SAMPLES
 
-            run_features = []  # list of single feature vectors
+            run_features = []
+            run_labels = []                     # scalar labels only
 
             for start in range(0, len(resistance) - window_samples + 1, step):
                 window_res = resistance[start:start + window_samples]
-                window_label = np.max(labels[start:start + window_samples])
+                window_label = int(np.max(label_array[start:start + window_samples]))
+
+                extractor.reset()               # clean per-window
 
                 for r in window_res:
                     extractor.update(r)
@@ -175,13 +179,14 @@ def load_or_extract_features(force_extract: bool = False):
                     feats = feats_40
 
                 run_features.append(feats)
+                run_labels.append(window_label)   # scalar int
 
             # Build sequences
             for i in range(SEQ_LEN - 1, len(run_features)):
-                seq = np.array(run_features[i - SEQ_LEN + 1 : i + 1])   # (SEQ_LEN, feat_dim)
-                label = run_features[i]   # label of the last timestep
+                seq = np.array(run_features[i - SEQ_LEN + 1 : i + 1])
+                seq_label = run_labels[i]                     # label of LAST window
                 seq_list.append(seq)
-                labels_list.append(label)
+                labels_list.append(seq_label)
                 groups_list.append(run_id)
 
         X_seq = np.array(seq_list, dtype=np.float32)
@@ -199,8 +204,8 @@ def load_or_extract_features(force_extract: bool = False):
         )
         print(f"Saved cache → {CACHE_FILE}")
 
-    # Scaling
-    print("Loading scaler...")
+    # Scaling - ALWAYS applied
+    print("Loading scaler and scaling sequences...")
     scaler = joblib.load(SCALER_PATH)
     N, S, F = X_seq.shape
     X_flat = X_seq.reshape(-1, F)
