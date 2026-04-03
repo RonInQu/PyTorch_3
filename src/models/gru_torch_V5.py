@@ -72,6 +72,7 @@ class ClotFeatureExtractor:
         i = 0
 
         # Basic stats
+        # Features 0–9
         f[i:i+10] = [data.mean(), data.std(), data.var(), data.min(), data.max(),
                      np.ptp(data), np.median(data),
                      np.std(data[-500:]) if n >= 500 else 0,
@@ -80,6 +81,7 @@ class ClotFeatureExtractor:
         i += 10
 
         # Slopes
+        # Features 10–15: slopes over different time scales
         for secs in [1,2,3,4,5,6]:
             ns = min(int(secs * self.fs), n)
             if ns >= 2:
@@ -89,6 +91,7 @@ class ClotFeatureExtractor:
             i += 1
 
         # Derivative
+        # Features 16–21: derivative statistics
         deriv = np.diff(data)
         if len(deriv) > 10:
             f[i:i+6] = [deriv.mean(), deriv.std(), deriv.var(),
@@ -98,12 +101,14 @@ class ClotFeatureExtractor:
         i += 6
 
         # EMA
+        # Features 22–27: EMA and related
         f[i:i+6] = [self.ema_fast, self.ema_slow, self.ema_fast-self.ema_slow,
                     0.0, self.ema_fast/(self.ema_slow+1e-6),
                     np.abs(self.ema_fast-self.ema_slow)]
         i += 6
 
         # Detrended
+        # Features 28–35: detrended statistics
         kernel = 450
         if n >= kernel:
             trend = np.convolve(data, np.ones(kernel)/kernel, 'valid')
@@ -117,6 +122,7 @@ class ClotFeatureExtractor:
         i += 8
 
         # Percentiles
+        # Features 36–39: percentile-based
         f[i:i+4] = [np.percentile(data,90)-data.mean(),
                     np.percentile(data,75)-np.percentile(data,25),
                     np.percentile(data,95)-np.percentile(data,5),
