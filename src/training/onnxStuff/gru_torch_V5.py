@@ -83,8 +83,7 @@ class ClotFeatureExtractor:
         for secs in [1,2,3,4,5,6]:
             ns = min(int(secs * self.fs), n)
             if ns >= 2:
-                # slope = stats.linregress(np.arange(ns), data[-ns:]).slope
-                slope = np.polyfit(np.arange(ns), data[-ns:], 1)[0]
+                slope = stats.linregress(np.arange(ns), data[-ns:]).slope
                 f[i] = slope if np.isfinite(slope) else 0.0
             i += 1
 

@@ -25,13 +25,16 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # ================= CONSTANTS =================
 SAMPLE_RATE = 150
-WINDOW_SEC = 5.0
-STRIDE_SAMPLES = 30
+# WINDOW_SEC = 5.0
+# STRIDE_SAMPLES = 30
 FEATURE_DIM = 40                    # Total features before reduction
 MIN_SAMPLES_FOR_FEATURE = 100
 
 # ================= IMPORT FROM gru_torch_V5 =================
-from src.models.gru_torch_V5 import REDUCE_DIM, ClotFeatureExtractor, SEQ_LEN
+from src.models.gru_torch_V5 import REDUCE_DIM, ClotFeatureExtractor, \
+    SEQ_LEN, WINDOW_SEC
+
+from src.training.train_gru_V5 import STRIDE_SAMPLES
 
 # ================= Derived CONFIG =================
 extractor_temp = ClotFeatureExtractor(sample_rate=SAMPLE_RATE, window_sec=WINDOW_SEC)
@@ -41,7 +44,7 @@ dim_str = f"red{active_dim}" if REDUCE_DIM else f"{FEATURE_DIM}"
 
 OUTPUT_SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
 
-print(f"Scaler config:")
+print("Scaler config:")
 print(f"   REDUCE_DIM      = {REDUCE_DIM}")
 print(f"   SEQ_LEN         = {SEQ_LEN}")
 print(f"   SAMPLE_RATE     = {SAMPLE_RATE} Hz")

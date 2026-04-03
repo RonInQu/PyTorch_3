@@ -409,19 +409,38 @@ def process_file(filepath: Path,
               f"Prec: {precision_score(gt, interp_ml, average='macro'):.4f}  Rec: {recall_score(gt, interp_ml, average='macro'):.4f}")
         print(f"Improvement: Acc {accuracy_score(gt, interp_ml)-accuracy_score(gt, da):+.4f}   "
               f"F1 {f1_score(gt, interp_ml, average='macro')-f1_score(gt, da, average='macro'):+.4f}")
-        
+
+        # ── Override analysis ──
+        override_mask = (interp_ml != da)  # ML changed DA's call
+        n_overrides = override_mask.sum()
+        if n_overrides > 0:
+            correct_overrides = ((interp_ml[override_mask] == gt[override_mask]).sum())
+            harmful_overrides = ((da[override_mask] == gt[override_mask]).sum())
+            override_prec = correct_overrides / n_overrides
+
+            # DA errors on clot/wall that ML could have caught
+            da_cw_errors = ((da != gt) & ((gt == 1) | (gt == 2))).sum()
+            override_rec = correct_overrides / da_cw_errors if da_cw_errors > 0 else 0.0
+
+            print(f"\n  Override analysis ({study_name}):")
+            print(f"    Total overrides:   {n_overrides}")
+            print(f"    Correct (ML right, DA wrong): {correct_overrides}")
+            print(f"    Harmful (DA right, ML wrong): {harmful_overrides}")
+            print(f"    Override Precision: {override_prec:.4f}")
+            print(f"    Override Recall:    {override_rec:.4f}  (of {da_cw_errors} DA clot/wall errors)")
+        else:
+            print(f"\n  No overrides in {study_name}")
+
         # Collect for global summary (only if ground truth & DA exist)
         if gt_labels is not None and da_labels is not None:
-            # Interpolate ML predictions to full sampling points
-    
             # Append to global lists
             all_gt_labels.extend(gt)
             all_da_labels.extend(da)
             all_ml_preds.extend(interp_ml)
 
-        # Optional: count overrides (ML != DA)
+        # Track override times
         overrides = np.where(interp_ml != da)[0]
-        all_override_times.extend(full_times[overrides])  # or just count len(overrides)
+        all_override_times.extend(full_times[overrides])
         
     print(f"Finished {study_name}\n")
 
@@ -473,10 +492,37 @@ def main():
         print(f"ML  Precision: {prec_ml:.4f}    Recall: {rec_ml:.4f}")
         print(f"Improvement: Precision {prec_ml - prec_da:+.4f}   Recall {rec_ml - rec_da:+.4f}")
 
-        # total_overrides = len(all_override_times)
-        # print(f"\nTotal ML overrides of DA: {total_overrides} points")    
+        # ── Global Override Analysis ──
+        gt_arr = np.array(all_gt_labels)
+        da_arr = np.array(all_da_labels)
+        ml_arr = np.array(all_ml_preds)
 
-    print("All files processed.")
+        g_override_mask = (ml_arr != da_arr)
+        g_n_overrides = g_override_mask.sum()
+
+        print(f"\n{'─'*70}")
+        print(f"GLOBAL OVERRIDE ANALYSIS")
+        print(f"{'─'*70}")
+        print(f"Total overrides across all studies: {g_n_overrides}")
+
+        if g_n_overrides > 0:
+            g_correct = (ml_arr[g_override_mask] == gt_arr[g_override_mask]).sum()
+            g_harmful = (da_arr[g_override_mask] == gt_arr[g_override_mask]).sum()
+            g_neither = g_n_overrides - g_correct - g_harmful  # both wrong, but differently
+            g_override_prec = g_correct / g_n_overrides
+
+            g_da_cw_errors = ((da_arr != gt_arr) & ((gt_arr == 1) | (gt_arr == 2))).sum()
+            g_override_rec = g_correct / g_da_cw_errors if g_da_cw_errors > 0 else 0.0
+
+            print(f"  Correct overrides (ML right, DA wrong): {g_correct}")
+            print(f"  Harmful overrides (DA right, ML wrong): {g_harmful}")
+            print(f"  Neither correct (both wrong differently): {g_neither}")
+            print(f"")
+            print(f"  Override Precision: {g_override_prec:.4f}  (target: >0.85)")
+            print(f"  Override Recall:    {g_override_rec:.4f}  (of {g_da_cw_errors} DA clot/wall errors)")
+            print(f"  Net benefit:        {g_correct - g_harmful:+d} samples")
+
+    print("\nAll files processed.")
 
 
 if __name__ == "__main__":

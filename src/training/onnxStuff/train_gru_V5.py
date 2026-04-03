@@ -28,49 +28,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]  # goes up from src/data/ →
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # Import from gru_torch_V5 (single source of truth)
-from src.models.gru_torch_V5 import ClotFeatureExtractor, ClotGRU, \
-    REDUCE_DIM, SEQ_LEN, WINDOW_SEC
+from src.models.gru_torch_V5 import ClotFeatureExtractor, ClotGRU, REDUCE_DIM, SEQ_LEN
 
 # ────────────────────────────────────────────────
 # CONFIGURATION
 # ────────────────────────────────────────────────
 
-"""
-To set up the different configurations:
-Config	                STRIDE_SAMPLES (train)	REPORT_INTERVAL_MS (inference)
-Current	                      30	                      200
-Option A — wider training	  150	                      200
-Option B — matched at 500ms	  75	                      500
-
-The reporting interval (200–500ms) and the training stride don't have to match. They serve different purposes:
-
-Reporting interval = how often inference makes a prediction. 200ms is good for real-time responsiveness.
-Training stride = how much feature evolution the GRU learns to interpret between timesteps.
-Recommended Approach
-Train with a larger stride (e.g., 150 samples = 1s) to teach the GRU meaningful temporal patterns. 
-Then at inference, keep reporting every 200ms — the GRU will still work because:
-
-The feat_history deque collects scaled features every 200ms
-The GRU sees 8 features spaced 200ms apart (1.4s span)
-The features change less between consecutive inference steps than between training steps
-But the GRU learned what "rising std" or "changing slope" looks like from training — it just sees a smoother, 
-smaller version of those patterns at inference
-This is a form of data augmentation — the model learns from coarser-grained temporal patterns and generalizes 
-to finer-grained ones. It's analogous to training an image model on 224px and running inference on 256px.
-
-Alternatively: match training stride to inference
-If you want strict train/inference parity, use STRIDE_SAMPLES=75 (500ms) as a compromise:
-
-Stride	Overlap	Seq span	Distinct info per step
-30 (200ms)	96%	1.4s	4% new data
-75 (500ms)	90%	3.5s	10% new data
-150 (1.0s)	80%	7.0s	20% new data
-"""
-
 # SEEDS_TO_TRY = [456, 123, 42]        # ← Add more seeds here if desired
 SEEDS_TO_TRY = [456]
 
-# WINDOW_SEC = 5.0
+WINDOW_SEC = 5.0
 STRIDE_SAMPLES = 30
 
 BATCH_SIZE = 1024
