@@ -1,7 +1,7 @@
 # fit_scaler_V5.py
 """
 Fits the StandardScaler for clot detection features with SEQ_LEN support.
-Imports FEATURE_SET and extractor from gru_torch_V5.py (single source of truth).
+Imports REDUCE_DIM and extractor from gru_torch_V5.py (single source of truth).
 """
 
 import pandas as pd
@@ -25,25 +25,33 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # ================= CONSTANTS =================
 SAMPLE_RATE = 150
+# WINDOW_SEC = 5.0
+# STRIDE_SAMPLES = 30
+FEATURE_DIM = 40                    # Total features before reduction
 MIN_SAMPLES_FOR_FEATURE = 100
 
 # ================= IMPORT FROM gru_torch_V5 =================
-from src.models.gru_torch_V5 import FEATURE_SET, FEATURE_SETS, TOTAL_FEATURES, \
-    ClotFeatureExtractor, SEQ_LEN, WINDOW_SEC, active_idx, active_dim, dim_str
+from src.models.gru_torch_V5 import REDUCE_DIM, ClotFeatureExtractor, \
+    SEQ_LEN, WINDOW_SEC
 
 from src.training.train_gru_V5 import STRIDE_SAMPLES
 
 # ================= Derived CONFIG =================
+extractor_temp = ClotFeatureExtractor(sample_rate=SAMPLE_RATE, window_sec=WINDOW_SEC)
+zero_idx = extractor_temp.zero_idx
+active_dim = FEATURE_DIM - len(zero_idx) if REDUCE_DIM else FEATURE_DIM
+dim_str = f"red{active_dim}" if REDUCE_DIM else f"{FEATURE_DIM}"
+
 OUTPUT_SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
 
 print("Scaler config:")
-print(f"   FEATURE_SET     = {FEATURE_SET}")
+print(f"   REDUCE_DIM      = {REDUCE_DIM}")
 print(f"   SEQ_LEN         = {SEQ_LEN}")
 print(f"   SAMPLE_RATE     = {SAMPLE_RATE} Hz")
 print(f"   WINDOW_SEC      = {WINDOW_SEC} s")
 print(f"   STRIDE_SAMPLES  = {STRIDE_SAMPLES}")
-print(f"   Total features  = {TOTAL_FEATURES}")
-print(f"   Active features = {active_dim}  ({FEATURE_SET})")
+print(f"   Total features  = {FEATURE_DIM}")
+print(f"   Active features = {active_dim}")
 
 # ================= Main Scaler Fitting =================
 TRAINING_DATA_DIR = PROJECT_ROOT / "training_data"
@@ -91,10 +99,14 @@ for file_path in tqdm(parquet_files, desc="Processing files"):
         for r in window_res:
             extractor.update(r)
 
-        feats_all = extractor.compute_features()
+        feats_40 = extractor.compute_features()
 
-        if feats_all is not None and len(feats_all) == TOTAL_FEATURES:
-            feats = feats_all[active_idx]
+        if feats_40 is not None and len(feats_40) == FEATURE_DIM:
+            if REDUCE_DIM:
+                active_idx = [i for i in range(FEATURE_DIM) if i not in zero_idx]
+                feats = feats_40[active_idx]
+            else:
+                feats = feats_40
             run_features.append(feats)
 
     # Build sequences from run_features

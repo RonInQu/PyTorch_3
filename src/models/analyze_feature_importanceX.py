@@ -10,8 +10,7 @@ import seaborn as sns
 from sklearn.inspection import permutation_importance
 from sklearn.base import BaseEstimator, ClassifierMixin
 import matplotlib.pyplot as plt
-from src.models.gru_torch_V5 import ClotFeatureExtractor, ClotGRU, SEQ_LEN, \
-    TOTAL_FEATURES, FEATURE_SET, active_idx, active_dim, dim_str
+from src.models.gru_torch_V5 import ClotFeatureExtractor, ClotGRU, SEQ_LEN, dim_str  # adjust path if needed
 
 feature_descriptions = {
     0: "mean of window",
@@ -53,20 +52,7 @@ feature_descriptions = {
     36: "90th percentile - mean",
     37: "IQR (75th - 25th)",
     38: "95th - 5th percentile range",
-    39: "fraction above 95th percentile",
-    40: "spectral centroid",
-    41: "spectral flatness",
-    42: "band power ratio (low/high)",
-    43: "dominant frequency",
-    44: "Hjorth mobility",
-    45: "Hjorth complexity",
-    46: "sample entropy (decimated)",
-    47: "zero-crossing rate",
-    48: "variance ratio (1s/4s)",
-    49: "CUSUM max",
-    50: "autocorrelation lag-1",
-    51: "energy ratio (last 1s / full)",
-    52: "mean abs 2nd derivative",
+    39: "fraction above 95th percentile"
 }
 
 # CONFIG
@@ -80,7 +66,6 @@ STRIDE_SAMPLES = 30  # 75
 WINDOW_SEC     = 5.0 # 6.0
 SAMPLE_RATE    = 150
 
-print(f"Feature set: {FEATURE_SET} ({active_dim} features)")
 print("Loading scaler and model...")
 scaler = joblib.load(SCALER_PATH)
 model  = ClotGRU()
@@ -106,8 +91,7 @@ for file in test_files:
         window_label = np.max(labels[start:start + window_samples])
         for r in window_res:
             extractor.update(r)
-        feats_all = extractor.compute_features()
-        feats = feats_all[active_idx]
+        feats = extractor.compute_features()
         X_test_list.append(feats)
         y_test_list.append(window_label)
 
@@ -167,8 +151,8 @@ perm_result = permutation_importance(
 # Results table
 sorted_idx = perm_result.importances_mean.argsort()[::-1]
 
-print(f"\n" + "="*100)
-print(f"PERMUTATION IMPORTANCE (drop in f1_macro) — {active_dim} ACTIVE FEATURES (set: {FEATURE_SET})")
+print("\n" + "="*100)
+print("PERMUTATION IMPORTANCE (drop in f1_macro) — ALL 40 FEATURES")
 print("="*100)
 print(f"{'Rank':>4} {'Feature':>8} {'Mean drop':>12} {'Std':>10} {'Description':<40} {'Hint':<35}")
 print("-"*100)
@@ -176,27 +160,24 @@ print("-"*100)
 for rank, idx in enumerate(sorted_idx, 1):
     mean_drop = perm_result.importances_mean[idx]
     std_drop  = perm_result.importances_std[idx]
-    # Map local index back to global feature index
-    global_idx = active_idx[idx]
-    desc = feature_descriptions.get(global_idx, "unknown")
+    desc = feature_descriptions.get(idx, "unknown")
     hint = ""
     if mean_drop < 0.001:
         hint = "→ likely safe to remove"
     elif mean_drop < 0.005:
         hint = "→ low value, test removal"
-    print(f"{rank:4d}   f{global_idx:3d}       {mean_drop:9.5f}   ± {std_drop:7.5f}  {desc:<40} {hint}")
+    print(f"{rank:4d}   f{idx:3d}       {mean_drop:9.5f}   ± {std_drop:7.5f}  {desc:<40} {hint}")
 
 # Plots
 plt.figure(figsize=(14, 10))
-n_top = min(30, len(sorted_idx))
-labels_top = [f"f{active_idx[i]}" for i in sorted_idx[:n_top]]
+labels_top = [f"f{i}" for i in sorted_idx[:30]]
 plt.boxplot(
-    perm_result.importances[sorted_idx[:n_top]].T,
+    perm_result.importances[sorted_idx[:30]].T,
     vert=False,
     labels=labels_top
 )
 plt.axvline(0, color='gray', linestyle='--', alpha=0.7)
-plt.title(f"Permutation Feature Importance \u2013 Top {n_top} (test set, f1_macro, set: {FEATURE_SET})", fontsize=14)
+plt.title("Permutation Feature Importance – Top 30 (test set, f1_macro)", fontsize=14)
 plt.xlabel("Drop in f1_macro when feature is permuted")
 plt.grid(True, axis='x', alpha=0.3)
 plt.tight_layout()
@@ -207,14 +188,14 @@ plt.figure(figsize=(12, 14))
 plt.boxplot(
     perm_result.importances[sorted_idx].T,
     vert=False,
-    labels=[f"f{active_idx[i]}" for i in sorted_idx]
+    labels=[f"f{i}" for i in sorted_idx]
 )
 plt.axvline(0, color='gray', linestyle='--', alpha=0.7)
-plt.title(f"Permutation Feature Importance – All {active_dim} Features (set: {FEATURE_SET})", fontsize=14)
+plt.title("Permutation Feature Importance – All 40 Features", fontsize=14)
 plt.xlabel("Drop in f1_macro when feature is permuted")
 plt.grid(True, axis='x', alpha=0.3)
 plt.tight_layout()
-plt.savefig(f"permutation_importance_f1_macro_all_{FEATURE_SET}.png", dpi=200, bbox_inches='tight')
+plt.savefig("permutation_importance_f1_macro_all40.png", dpi=200, bbox_inches='tight')
 plt.show()
 
 important_indices = sorted_idx[:20]  # top 20 for example
@@ -222,18 +203,18 @@ important_indices = sorted_idx[:20]  # top 20 for example
 # ────────────────────────────────────────────────
 # ADD CORRELATION HEATMAP HERE
 # ────────────────────────────────────────────────
-print("Top 20 features:", [f"f{active_idx[i]}" for i in important_indices])
+print("Top 20 features:", [f"f{idx}" for idx in important_indices])
 top_features_data = pd.DataFrame(X_test_scaled[:, important_indices],
-                                 columns=[f"f{active_idx[i]}" for i in important_indices])
+                                 columns=[f"f{idx}" for idx in important_indices])
 
 corr = top_features_data.corr()
 
 plt.figure(figsize=(12, 10))
 sns.heatmap(corr, annot=True, cmap='coolwarm', fmt=".2f", vmin=-1, vmax=1,
             linewidths=0.5, cbar_kws={'label': 'Correlation'})
-plt.title(f"Correlation Heatmap - Top 20 Important Features (set: {FEATURE_SET})")
+plt.title("Correlation Heatmap - Top 20 Important Features")
 plt.tight_layout()
-plt.savefig(f"top20_features_correlation_heatmap_{FEATURE_SET}.png", dpi=300)
+plt.savefig("top20_features_correlation_heatmap.png", dpi=300)
 plt.show()  # or plt.close() if you don't want to display
 
 print("\nPlots saved.")

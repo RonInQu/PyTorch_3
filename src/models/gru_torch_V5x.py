@@ -25,41 +25,16 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 # ────────────────────────────────────────────────
 SEQ_LEN = 8
 
+REDUCE_DIM = False
 WINDOW_SEC = 5.0
 REPORT_INTERVAL_MS = 200
 
 GRU_OVERRIDE_THRD_CLOT = 0.80
 GRU_OVERRIDE_THRD_WALL = 0.92
 
-# Feature set selection — replaces REDUCE_DIM
-# "all"          = all features (including new spectral/complexity/transition)
-# "original_40"  = original 40 features only (backward compatible)
-# "top20"        = top 20 from permutation importance analysis
-# "clean_36"     = original 40 minus 4 dead features (f14, f25, f31, f33)
-FEATURE_SET = "all"
-
-TOTAL_FEATURES = 53  # Total features computed by ClotFeatureExtractor
-
 # Paths
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
-
-# ────────────────────────────────────────────────
-# FEATURE_SETS — index-based selection
-# ────────────────────────────────────────────────
-# Features 0-39:  original features
-# Features 40-43: spectral (centroid, flatness, low/high band power ratio, dominant freq)
-# Features 44-46: complexity (Hjorth mobility, Hjorth complexity, SampEn decimated)
-# Features 47:    zero-crossing rate
-# Features 48-52: transition (variance ratio 1s/4s, CUSUM max, autocorr lag-1,
-#                              energy ratio last1s/full, mean abs 2nd derivative)
-
-FEATURE_SETS = {
-    "all":          list(range(TOTAL_FEATURES)),
-    "original_40":  list(range(40)),
-    "clean_36":     [i for i in range(40) if i not in [14, 25, 31, 33]],
-    "top20":        [4, 0, 1, 9, 23, 3, 21, 19, 30, 32, 15, 36, 27, 24, 16, 12, 8, 34, 20, 10],
-}
 
 # ────────────────────────────────────────────────
 # ClotFeatureExtractor
@@ -73,7 +48,7 @@ class ClotFeatureExtractor:
         self.ema_slow = 0.0
         self.alpha_fast = 0.2
         self.alpha_slow = 0.01
-        self.zero_idx = [3, 6, 7, 25, 28, 29, 30, 31, 32, 33, 34, 35]  # kept for backward compat
+        self.zero_idx = [3, 6, 7, 25, 28, 29, 30, 31, 32, 33, 34, 35]
 
     def reset(self):
         self.buffer.clear()
@@ -89,16 +64,15 @@ class ClotFeatureExtractor:
 
     def compute_features(self):
         if len(self.buffer) < 100:
-            return np.zeros(TOTAL_FEATURES, dtype=np.float32)
+            return np.zeros(40, dtype=np.float32)
 
         data = np.array(self.buffer, dtype=np.float32)
         n = len(data)
-        f = np.zeros(TOTAL_FEATURES, dtype=np.float32)
+        f = np.zeros(40, dtype=np.float32)
         i = 0
 
-        # ── Original 40 features (f0-f39) ──────────────────
-
-        # Basic stats (f0-f9)
+        # Basic stats
+        # Features 0–9
         f[i:i+10] = [data.mean(), data.std(), data.var(), data.min(), data.max(),
                      np.ptp(data), np.median(data),
                      np.std(data[-500:]) if n >= 500 else 0,
@@ -106,15 +80,18 @@ class ClotFeatureExtractor:
                      np.mean(np.abs(np.diff(data[-500:]))) if n >= 500 else 0]
         i += 10
 
-        # Slopes (f10-f15)
+        # Slopes
+        # Features 10–15: slopes over different time scales
         for secs in [1,2,3,4,5,6]:
             ns = min(int(secs * self.fs), n)
             if ns >= 2:
+                # slope = stats.linregress(np.arange(ns), data[-ns:]).slope
                 slope = np.polyfit(np.arange(ns), data[-ns:], 1)[0]
                 f[i] = slope if np.isfinite(slope) else 0.0
             i += 1
 
-        # Derivative (f16-f21)
+        # Derivative
+        # Features 16–21: derivative statistics
         deriv = np.diff(data)
         if len(deriv) > 10:
             f[i:i+6] = [deriv.mean(), deriv.std(), deriv.var(),
@@ -123,13 +100,15 @@ class ClotFeatureExtractor:
                         stats.kurtosis(deriv) if len(deriv)>=4 else 0]
         i += 6
 
-        # EMA (f22-f27)
+        # EMA
+        # Features 22–27: EMA and related
         f[i:i+6] = [self.ema_fast, self.ema_slow, self.ema_fast-self.ema_slow,
                     0.0, self.ema_fast/(self.ema_slow+1e-6),
                     np.abs(self.ema_fast-self.ema_slow)]
         i += 6
 
-        # Detrended (f28-f35)
+        # Detrended
+        # Features 28–35: detrended statistics
         kernel = 450
         if n >= kernel:
             trend = np.convolve(data, np.ones(kernel)/kernel, 'valid')
@@ -142,109 +121,12 @@ class ClotFeatureExtractor:
                         stats.kurtosis(r600) if len(r600)>=4 else 0]
         i += 8
 
-        # Percentiles (f36-f39)
+        # Percentiles
+        # Features 36–39: percentile-based
         f[i:i+4] = [np.percentile(data,90)-data.mean(),
                     np.percentile(data,75)-np.percentile(data,25),
                     np.percentile(data,95)-np.percentile(data,5),
                     np.sum(data > np.percentile(data,95))/len(data)]
-        i += 4
-
-        # ── New spectral features (f40-f43) ────────────────
-
-        mag = np.abs(np.fft.rfft(data))
-        freqs = np.fft.rfftfreq(n, d=1.0 / self.fs)
-
-        mag_sum = mag.sum() + 1e-8
-        # f40: spectral centroid
-        f[i] = (freqs * mag).sum() / mag_sum
-        i += 1
-        # f41: spectral flatness
-        mag_safe = mag + 1e-10
-        f[i] = np.exp(np.log(mag_safe).mean()) / (mag_safe.mean() + 1e-10)
-        i += 1
-        # f42: band power ratio (low 0-15 Hz / high 40-75 Hz)
-        low_mask = (freqs >= 0) & (freqs < 15)
-        high_mask = (freqs >= 40) & (freqs < 75)
-        power_low = (mag[low_mask]**2).sum()
-        power_high = (mag[high_mask]**2).sum() + 1e-8
-        f[i] = power_low / power_high
-        i += 1
-        # f43: dominant frequency
-        f[i] = freqs[np.argmax(mag)]
-        i += 1
-
-        # ── New complexity features (f44-f47) ──────────────
-
-        # f44: Hjorth mobility
-        dx = np.diff(data)
-        data_var = data.var() + 1e-8
-        dx_var = dx.var() + 1e-8
-        f[i] = np.sqrt(dx_var / data_var)
-        i += 1
-        # f45: Hjorth complexity
-        ddx = np.diff(dx)
-        ddx_var = ddx.var() + 1e-8
-        mob_data = np.sqrt(dx_var / data_var)
-        mob_dx = np.sqrt(ddx_var / dx_var)
-        f[i] = mob_dx / (mob_data + 1e-8)
-        i += 1
-        # f46: Sample entropy (decimated to ~75 samples)
-        decimate_factor = max(1, n // 75)
-        data_dec = data[::decimate_factor]
-        n_dec = len(data_dec)
-        r_tol = 0.2 * (data_dec.std() + 1e-8)
-        m = 2
-        count_m, count_m1 = 0, 0
-        for j in range(n_dec - m):
-            tmpl_m = data_dec[j:j+m]
-            tmpl_m1 = data_dec[j:j+m+1] if j+m+1 <= n_dec else None
-            for k in range(j+1, n_dec - m):
-                if np.max(np.abs(tmpl_m - data_dec[k:k+m])) < r_tol:
-                    count_m += 1
-                    if tmpl_m1 is not None and k+m+1 <= n_dec:
-                        if np.max(np.abs(tmpl_m1 - data_dec[k:k+m+1])) < r_tol:
-                            count_m1 += 1
-        f[i] = -np.log((count_m1 + 1e-8) / (count_m + 1e-8))
-        i += 1
-        # f47: zero-crossing rate
-        data_centered = data - data.mean()
-        f[i] = ((data_centered[:-1] * data_centered[1:]) < 0).sum() / n
-        i += 1
-
-        # ── New transition features (f48-f52) ──────────────
-
-        # f48: variance ratio (recent 1s / older 4s)
-        n_1s = min(int(1.0 * self.fs), n)
-        n_4s = min(int(4.0 * self.fs), n)
-        if n >= n_1s + n_4s:
-            var_recent = data[-n_1s:].var() + 1e-8
-            var_older = data[-(n_1s + n_4s):-n_1s].var() + 1e-8
-            f[i] = var_recent / var_older
-        else:
-            f[i] = 1.0
-        i += 1
-        # f49: CUSUM max (cumulative sum of deviations from running mean)
-        mu = data.mean()
-        cusum = np.cumsum(data - mu)
-        f[i] = np.max(np.abs(cusum)) / (n + 1e-8)
-        i += 1
-        # f50: autocorrelation at lag 1
-        if n > 1:
-            data_dm = data - data.mean()
-            c0 = np.dot(data_dm, data_dm)
-            c1 = np.dot(data_dm[:-1], data_dm[1:])
-            f[i] = c1 / (c0 + 1e-8)
-        i += 1
-        # f51: energy ratio (last 1s energy / full 5s energy)
-        energy_full = (data**2).sum() + 1e-8
-        energy_recent = (data[-n_1s:]**2).sum()
-        f[i] = energy_recent / energy_full
-        i += 1
-        # f52: mean absolute second derivative
-        if len(deriv) > 1:
-            deriv2 = np.diff(deriv)
-            f[i] = np.mean(np.abs(deriv2))
-        i += 1
 
         return f.copy()
 
@@ -252,9 +134,8 @@ class ClotFeatureExtractor:
 # ────────────────────────────────────────────────
 # Dynamic dimension & paths
 # ────────────────────────────────────────────────
-active_idx = FEATURE_SETS[FEATURE_SET]
-active_dim = len(active_idx)
-dim_str = f"{FEATURE_SET}_{active_dim}"
+active_dim = 40 - len(ClotFeatureExtractor().zero_idx) if REDUCE_DIM else 40
+dim_str = f"red{active_dim}" if REDUCE_DIM else "40"
 
 SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
 MODEL_PATH = PROJECT_ROOT / "src" / "training" / "clot_gru_trained.pt"
@@ -313,9 +194,14 @@ class LiveClotDetector:
         self.feat_history = deque(maxlen=SEQ_LEN)   # will store scaled active features
 
     @torch.no_grad()
-    def predict(self, raw_feats, da_label=None):
-        # Select active features
-        feats_active = raw_feats[active_idx]
+    def predict(self, raw_feats_40, da_label=None):
+        # Drop unused features before scaling
+        if REDUCE_DIM:
+            zero_idx = ClotFeatureExtractor().zero_idx
+            active_idx = [i for i in range(40) if i not in zero_idx]
+            feats_active = raw_feats_40[active_idx]
+        else:
+            feats_active = raw_feats_40
 
         scaled = self.scaler.transform(feats_active.reshape(1, -1))[0]
 
@@ -410,9 +296,9 @@ def process_file(filepath: Path,
         extractor.update(float(r))
 
         if t - last_report >= REPORT_INTERVAL_MS:
-            feats = extractor.compute_features()
+            feats_40 = extractor.compute_features()
             da_now = da_labels[i] if da_labels is not None else None
-            post = detector.predict(feats, da_now)
+            post = detector.predict(feats_40, da_now)
             status = np.argmax(post)
 
             results.append({
