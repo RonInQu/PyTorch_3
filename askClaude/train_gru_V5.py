@@ -29,7 +29,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # Import from gru_torch_V5 (single source of truth)
 from src.models.gru_torch_V5 import ClotFeatureExtractor, ClotGRU, \
-    REDUCE_DIM, SEQ_LEN, WINDOW_SEC
+    FEATURE_SET, FEATURE_SETS, TOTAL_FEATURES, SEQ_LEN, WINDOW_SEC, \
+    active_idx, active_dim, dim_str
 
 # ────────────────────────────────────────────────
 # CONFIGURATION
@@ -94,12 +95,9 @@ DATA_DIR = PROJECT_ROOT / "training_data"
 TEST_DIR = PROJECT_ROOT / "test_data"
 
 # Dynamic scaler path (matches fit_scaler_V5 and gru_torch_V5)
-active_dim = 40 - len(ClotFeatureExtractor().zero_idx) if REDUCE_DIM else 40
-dim_str = f"red{active_dim}" if REDUCE_DIM else "40"
-
 SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
 CACHE_DIR = PROJECT_ROOT / "cache"
-CACHE_FILE = CACHE_DIR / f"features_w{WINDOW_SEC:.1f}s_s{STRIDE_SAMPLES}_seq{SEQ_LEN}_red{REDUCE_DIM}.npz"
+CACHE_FILE = CACHE_DIR / f"features_w{WINDOW_SEC:.1f}s_s{STRIDE_SAMPLES}_seq{SEQ_LEN}_{FEATURE_SET}.npz"
 
 CLASS_NAMES = ['blood', 'clot', 'wall']
 CLINICAL_WEIGHTS = [1.0, 1.0, 1.0]
@@ -157,13 +155,13 @@ def print_label_stats_table(y_true, y_pred, title):
 
 
 # ────────────────────────────────────────────────
-# Cached Feature Extraction (updated for REDUCE_DIM)
+# Cached Feature Extraction (updated for FEATURE_SET)
 # ────────────────────────────────────────────────
 
 def load_or_extract_features(force_extract: bool = False):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-    cache_filename = f"features_w{WINDOW_SEC:.1f}s_s{STRIDE_SAMPLES}_seq{SEQ_LEN}_red{REDUCE_DIM}.npz"
+    cache_filename = f"features_w{WINDOW_SEC:.1f}s_s{STRIDE_SAMPLES}_seq{SEQ_LEN}_{FEATURE_SET}.npz"
     CACHE_FILE = CACHE_DIR / cache_filename
 
     if CACHE_FILE.exists() and not force_extract:
@@ -200,14 +198,8 @@ def load_or_extract_features(force_extract: bool = False):
                 # Extract features once we have a full window, every STRIDE_SAMPLES steps
                 samples_in = idx + 1
                 if samples_in >= window_size and (samples_in - window_size) % STRIDE_SAMPLES == 0:
-                    feats_40 = extractor.compute_features()
-        
-                    if REDUCE_DIM:
-                        zero_idx = extractor.zero_idx
-                        active_idx = [i for i in range(40) if i not in zero_idx]
-                        feats = feats_40[active_idx]
-                    else:
-                        feats = feats_40
+                    feats_all = extractor.compute_features()
+                    feats = feats_all[active_idx]
         
                     # Label from the current window [idx-window_size+1 .. idx]
                     win_start = idx - window_size + 1
@@ -333,8 +325,8 @@ def main():
     print("STARTING TRAINING")
     print("=" * 70)
     print(f"Device               : {DEVICE}")
-    print(f"REDUCE_DIM           : {REDUCE_DIM}")
-    print(f"Active features      : {active_dim}")
+    print(f"FEATURE_SET          : {FEATURE_SET}")
+    print(f"Active features      : {active_dim}  ({FEATURE_SET})")
     print(f"SEQ_LEN              : {SEQ_LEN}")
     print(f"SEEDS_TO_TRY         : {SEEDS_TO_TRY}")
     print(f"Batch size           : {BATCH_SIZE}")
