@@ -28,7 +28,7 @@ SAMPLE_RATE = 150
 MIN_SAMPLES_FOR_FEATURE = 100
 
 # ================= IMPORT FROM gru_torch_V5 =================
-from src.models.gru_torch_V5 import FEATURE_SET, FEATURE_SETS, TOTAL_FEATURES, \
+from src.models.gru_torch_V5 import FEATURE_SET, TOTAL_FEATURES, \
     ClotFeatureExtractor, SEQ_LEN, WINDOW_SEC, active_idx, active_dim, dim_str
 
 from src.training.train_gru_V5 import STRIDE_SAMPLES

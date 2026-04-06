@@ -59,6 +59,10 @@ FEATURE_SETS = {
     "original_40":  list(range(40)),
     "clean_36":     [i for i in range(40) if i not in [14, 25, 31, 33]],
     "top20":        [4, 0, 1, 9, 23, 3, 21, 19, 30, 32, 15, 36, 27, 24, 16, 12, 8, 34, 20, 10],
+    # d(clt-wall) > 0.15 — only features that help distinguish clot from wall
+    "clot_wall_focused": [39, 21, 4, 19, 45, 9, 5, 23, 0, 34, 28, 29, 3, 38, 17, 32, 52, 27, 1, 20, 44],
+    # per-run AUC >= 0.65 (clot vs wall), minus f42, plus f1/f38 — 24 features
+    "auc_cw_24": [0, 1, 3, 4, 5, 6, 9, 17, 18, 19, 21, 22, 23, 32, 33, 38, 39, 40, 41, 44, 45, 46, 47, 52],
 }
 
 # ────────────────────────────────────────────────
@@ -111,6 +115,7 @@ class ClotFeatureExtractor:
             ns = min(int(secs * self.fs), n)
             if ns >= 2:
                 slope = np.polyfit(np.arange(ns), data[-ns:], 1)[0]
+                slope = np.abs(slope)
                 f[i] = slope if np.isfinite(slope) else 0.0
             i += 1
 
@@ -254,7 +259,9 @@ class ClotFeatureExtractor:
 # ────────────────────────────────────────────────
 active_idx = FEATURE_SETS[FEATURE_SET]
 active_dim = len(active_idx)
-dim_str = f"{FEATURE_SET}_{active_dim}"
+# Include hash of actual indices so reordering invalidates cache/scaler
+_idx_hash = hash(tuple(active_idx)) % 0xFFFF
+dim_str = f"{FEATURE_SET}_{active_dim}_{_idx_hash:04x}"
 
 SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
 MODEL_PATH = PROJECT_ROOT / "src" / "training" / "clot_gru_trained.pt"
@@ -414,6 +421,7 @@ def process_file(filepath: Path,
             da_now = da_labels[i] if da_labels is not None else None
             post = detector.predict(feats, da_now)
             status = np.argmax(post)
+            entropy = -np.sum(post * np.log(post + 1e-12))
 
             results.append({
                 'time': t/1000.0,
@@ -421,7 +429,8 @@ def process_file(filepath: Path,
                 'resistance': float(r),
                 'Nprob': float(post[0]),
                 'Cprob': float(post[1]),
-                'Wprob': float(post[2])
+                'Wprob': float(post[2]),
+                'entropy': float(entropy)
             })
             last_report = t
 

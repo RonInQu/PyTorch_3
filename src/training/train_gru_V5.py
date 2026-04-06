@@ -29,7 +29,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # Import from gru_torch_V5 (single source of truth)
 from src.models.gru_torch_V5 import ClotFeatureExtractor, ClotGRU, \
-    FEATURE_SET, FEATURE_SETS, TOTAL_FEATURES, SEQ_LEN, WINDOW_SEC, \
+    FEATURE_SET,SEQ_LEN, WINDOW_SEC, \
     active_idx, active_dim, dim_str
 
 # ────────────────────────────────────────────────
@@ -84,7 +84,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # For DataLoader
 NUM_WORKERS = 8
-PIN_MEMORY = True
+PIN_MEMORY = False
 
 # Reproducibility will be set per seed
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
@@ -416,7 +416,7 @@ def main():
 
         # ====================== SAVE EVERY SEED ======================
         if best_state_this_seed is not None:
-            model_filename = f"clot_gru_trained_seed{seed}_f1{best_f1_this_seed:.4f}.pt"
+            model_filename = f"clot_gru_trained_seq{SEQ_LEN}_{FEATURE_SET}_seed{seed}_f1{best_f1_this_seed:.4f}.pt"
             save_path = PROJECT_ROOT / "src" / "training" / model_filename
             
             torch.save(best_state_this_seed, save_path)
@@ -426,7 +426,7 @@ def main():
             print(f"      F1-macro: {best_f1_this_seed:.4f}")
             print(f"      Path: {save_path}")
         else:
-            print(f"   ⚠️  No model saved for seed {seed} (best_state was None)")
+            print("   ⚠️  No model saved for seed {seed} (best_state was None)")
 
         # Update global best
         if best_f1_this_seed > best_global_f1:
@@ -437,9 +437,13 @@ def main():
 
     # Optional: save overall best as generic name for easy inference
     if best_state_global is not None:
-        latest_path = PROJECT_ROOT / "src" / "training" / "clot_gru_trained.pt"
+        latest_path = PROJECT_ROOT / "src" / "training" / f"clot_gru_trained_seq{SEQ_LEN}_{FEATURE_SET}.pt"
         torch.save(best_state_global, latest_path)
-        print(f"\n✅ Also saved overall best as: clot_gru_trained.pt")
+        print(f"\n✅ Also saved overall best as: clot_gru_trained_seq{SEQ_LEN}_{FEATURE_SET}.pt")
+
+        generic_path = PROJECT_ROOT / "src" / "training" / "clot_gru_trained.pt"
+        torch.save(best_state_global, generic_path)
+        print("✅ Also saved as: clot_gru_trained.pt")
 
     print("\n" + "="*70)
     print("ALL SEEDS FINISHED")

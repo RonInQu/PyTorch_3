@@ -29,7 +29,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # Import from gru_torch_V5 (single source of truth)
 from src.models.gru_torch_V5 import ClotFeatureExtractor, ClotGRU, \
-    FEATURE_SET, FEATURE_SETS, TOTAL_FEATURES, SEQ_LEN, WINDOW_SEC, \
+    FEATURE_SET, SEQ_LEN, WINDOW_SEC, \
     active_idx, active_dim, dim_str
 
 # ────────────────────────────────────────────────
@@ -359,6 +359,10 @@ def main():
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True)
 
         best_f1_this_seed = 0.0
         best_state_this_seed = None
@@ -387,13 +391,16 @@ def main():
             train_ds = TensorDataset(torch.from_numpy(tr_X).float(), torch.from_numpy(tr_y).long())
             val_ds   = TensorDataset(torch.from_numpy(va_X).float(), torch.from_numpy(va_y).long())
 
+            g = torch.Generator().manual_seed(seed + fold)
+
             train_dl = DataLoader(
                 train_ds, 
                 batch_size=BATCH_SIZE, 
                 shuffle=True,
                 num_workers=NUM_WORKERS,
                 pin_memory=PIN_MEMORY,
-                persistent_workers=True if NUM_WORKERS > 0 else False
+                persistent_workers=True if NUM_WORKERS > 0 else False,
+                generator=g,
             )
             
             val_dl = DataLoader(
@@ -416,7 +423,7 @@ def main():
 
         # ====================== SAVE EVERY SEED ======================
         if best_state_this_seed is not None:
-            model_filename = f"clot_gru_trained_seed{seed}_f1{best_f1_this_seed:.4f}.pt"
+            model_filename = f"clot_gru_trained_seq{SEQ_LEN}_{FEATURE_SET}_seed{seed}_f1{best_f1_this_seed:.4f}.pt"
             save_path = PROJECT_ROOT / "src" / "training" / model_filename
             
             torch.save(best_state_this_seed, save_path)
@@ -437,9 +444,13 @@ def main():
 
     # Optional: save overall best as generic name for easy inference
     if best_state_global is not None:
-        latest_path = PROJECT_ROOT / "src" / "training" / "clot_gru_trained.pt"
+        latest_path = PROJECT_ROOT / "src" / "training" / f"clot_gru_trained_seq{SEQ_LEN}_{FEATURE_SET}.pt"
         torch.save(best_state_global, latest_path)
-        print(f"\n✅ Also saved overall best as: clot_gru_trained.pt")
+        print(f"\n✅ Also saved overall best as: clot_gru_trained_seq{SEQ_LEN}_{FEATURE_SET}.pt")
+
+        generic_path = PROJECT_ROOT / "src" / "training" / "clot_gru_trained.pt"
+        torch.save(best_state_global, generic_path)
+        print(f"✅ Also saved as: clot_gru_trained.pt")
 
     print("\n" + "="*70)
     print("ALL SEEDS FINISHED")
