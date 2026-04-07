@@ -14,8 +14,6 @@ from tqdm import tqdm
 import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
-from scipy.signal import lfilter
-from collections import deque
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 os.environ["PYARROW_IGNORE_TIMEZONE"] = "1"
@@ -59,7 +57,7 @@ if not parquet_files:
 
 print(f"Found {len(parquet_files)} parquet files.")
 
-global_features = []  # list of individual feature vectors
+global_features = []  # list of sequences
 
 for file_path in tqdm(parquet_files, desc="Processing files"):
     print(f"\nReading: {file_path.name}")
@@ -86,23 +84,12 @@ for file_path in tqdm(parquet_files, desc="Processing files"):
     run_features = []   # single feature vectors for this run
 
     window_samples = extractor.window_size
-
-    # Precompute lfilter coefficients for vectorized EMA
-    af = extractor.alpha_fast
-    asl = extractor.alpha_slow
-    b_f, a_f = np.array([af]), np.array([1.0, -(1.0 - af)])
-    b_s, a_s = np.array([asl]), np.array([1.0, -(1.0 - asl)])
-
     for start in range(0, len(resistance) - window_samples + 1, STRIDE_SAMPLES):
         window_res = resistance[start : start + window_samples]
+        extractor.reset()
 
-        # Direct buffer set + vectorized EMA (replaces per-sample update loop)
-        extractor.buffer = deque(window_res, maxlen=window_samples)
-        r0 = float(window_res[0])
-        ema_f, _ = lfilter(b_f, a_f, window_res.astype(np.float64), zi=[r0 * (1.0 - af)])
-        ema_s, _ = lfilter(b_s, a_s, window_res.astype(np.float64), zi=[r0 * (1.0 - asl)])
-        extractor.ema_fast = float(ema_f[-1])
-        extractor.ema_slow = float(ema_s[-1])
+        for r in window_res:
+            extractor.update(r)
 
         feats_all = extractor.compute_features()
 
@@ -110,24 +97,32 @@ for file_path in tqdm(parquet_files, desc="Processing files"):
             feats = feats_all[active_idx]
             run_features.append(feats)
 
-    global_features.extend(run_features)
-    print(f"  → {len(run_features)} feature vectors extracted")
+    # Build sequences from run_features
+    for i in range(SEQ_LEN - 1, len(run_features)):
+        seq = np.array(run_features[i - SEQ_LEN + 1 : i + 1])   # (SEQ_LEN, active_dim)
+        global_features.append(seq)
+
+    print(f"  → {len(run_features)} single vectors → {max(0, len(run_features) - SEQ_LEN + 1)} sequences")
 
 if not global_features:
     print("No features extracted!")
     sys.exit(1)
 
-X = np.array(global_features, dtype=np.float32)   # (N, active_dim)
-print(f"\nCollected {X.shape[0]} feature vectors | shape={X.shape}")
+X_seq = np.array(global_features, dtype=np.float32)   # (N, SEQ_LEN, active_dim)
+print(f"\nCollected {X_seq.shape[0]} sequences | shape={X_seq.shape}")
 
-X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+X_seq = np.nan_to_num(X_seq, nan=0.0, posinf=0.0, neginf=0.0)
 
-# Scaling (fit on individual vectors — same stats as flattened sequences)
-print("Fitting scaler on feature vectors...")
+# Scaling (flatten → scale → reshape)
+print("Loading scaler and scaling sequences...")
+N, S, F = X_seq.shape
+X_flat = X_seq.reshape(-1, F)
+
 scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
+X_scaled_flat = scaler.fit_transform(X_flat)
+X_scaled = X_scaled_flat.reshape(N, S, F)
 
-print(f"\nAfter scaling ({X.shape[1]} active features):")
+print(f"\nAfter scaling ({F} active features):")
 print(f"   Mean: {X_scaled.mean():.6f}   (should be very close to 0)")
 print(f"   Std : {X_scaled.std():.6f}   (should be very close to 1)")
 
@@ -135,14 +130,15 @@ print(f"   Std : {X_scaled.std():.6f}   (should be very close to 1)")
 joblib.dump(scaler, OUTPUT_SCALER_PATH)
 print(f"\n✅ Scaler fitted and saved → {OUTPUT_SCALER_PATH}")
 
-# ================= Feature Correlation Heatmap =================
-print("\nGenerating feature correlation heatmap...")
-df_feat = pd.DataFrame(X_scaled, columns=[f"f{i}" for i in range(X_scaled.shape[1])])
+# ================= Feature Correlation Heatmap (on last timestep) =================
+print("\nGenerating feature correlation heatmap (last timestep of each sequence)...")
+last_timestep = X_scaled[:, -1, :]   # (N, active_dim)
+df_feat = pd.DataFrame(last_timestep, columns=[f"f{i}" for i in range(last_timestep.shape[1])])
 corr_matrix = df_feat.corr().abs()
 
 plt.figure(figsize=(14, 12))
 sns.heatmap(corr_matrix, annot=False, cmap='coolwarm', vmin=0, vmax=1, square=True)
-plt.title(f"Feature Correlation Heatmap ({X_scaled.shape[1]} features)")
+plt.title(f"Feature Correlation Heatmap (last timestep, {last_timestep.shape[1]} features)")
 plt.tight_layout()
 plt.savefig("feature_correlation_heatmap.png", dpi=300, bbox_inches='tight')
 plt.close()

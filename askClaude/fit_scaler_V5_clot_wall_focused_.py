@@ -15,7 +15,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from scipy.signal import lfilter
-from collections import deque
+from scipy import stats
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 os.environ["PYARROW_IGNORE_TIMEZONE"] = "1"
@@ -46,6 +46,86 @@ print(f"   WINDOW_SEC      = {WINDOW_SEC} s")
 print(f"   STRIDE_SAMPLES  = {STRIDE_SAMPLES}")
 print(f"   Total features  = {TOTAL_FEATURES}")
 print(f"   Active features = {active_dim}  ({FEATURE_SET})")
+
+# ================= Fast feature extractor (active features only) =================
+_SUPPORTED_FEATURES = {0, 1, 3, 4, 5, 9, 17, 19, 20, 21, 23, 27, 28, 29, 32, 34, 38, 39, 44, 45, 52}
+_unsupported = set(active_idx) - _SUPPORTED_FEATURES
+if _unsupported:
+    print(f"ERROR: active_idx contains features {_unsupported} not supported by fast extractor.")
+    print(f"       Update compute_active_features_fast() or use full ClotFeatureExtractor.")
+    sys.exit(1)
+
+# Read EMA constants from canonical source
+_extractor = ClotFeatureExtractor(sample_rate=SAMPLE_RATE, window_sec=WINDOW_SEC)
+WINDOW_SAMPLES = _extractor.window_size
+ALPHA_FAST = _extractor.alpha_fast
+ALPHA_SLOW = _extractor.alpha_slow
+del _extractor
+
+
+def compute_active_features_fast(data, ema_fast, ema_slow):
+    """Compute only features used by active_idx. Skips FFT, slopes, sample entropy."""
+    n = len(data)
+    if n < 100:
+        return None
+
+    f = np.zeros(TOTAL_FEATURES, dtype=np.float32)
+
+    # Basic stats (f0, f1, f3, f4, f5)
+    f[0] = data.mean()
+    f[1] = data.std()
+    f[3] = data.min()
+    f[4] = data.max()
+    f[5] = np.ptp(data)
+
+    # Diff of last 500 samples (f9, f32)
+    if n >= 500:
+        diff_500 = np.diff(data[-500:])
+        f[9] = np.mean(np.abs(diff_500))
+        f[32] = np.std(diff_500)
+
+    # Full derivative (f17, f19, f20, f21)
+    deriv = np.diff(data)
+    if len(deriv) > 10:
+        f[17] = deriv.std()
+        f[19] = np.mean(np.abs(deriv))
+        f[20] = stats.skew(deriv) if len(deriv) >= 3 else 0
+        f[21] = stats.kurtosis(deriv) if len(deriv) >= 4 else 0
+
+    # EMA (f23, f27)
+    f[23] = ema_slow
+    f[27] = np.abs(ema_fast - ema_slow)
+
+    # Detrended (f28, f29, f34)
+    kernel = 450
+    if n >= kernel:
+        trend = np.convolve(data, np.ones(kernel) / kernel, 'valid')
+        detr = data[-len(trend):] - trend
+        r600 = detr[-min(600, len(detr)):]
+        f[28] = np.std(r600)
+        f[29] = np.std(r600[:300])
+        f[34] = stats.skew(r600) if len(r600) >= 3 else 0
+
+    # Percentiles (f38, f39)
+    p95 = np.percentile(data, 95)
+    f[38] = p95 - np.percentile(data, 5)
+    f[39] = np.sum(data > p95) / n
+
+    # Hjorth mobility & complexity (f44, f45)
+    data_var = data.var() + 1e-8
+    dx_var = deriv.var() + 1e-8
+    ddx = np.diff(deriv)
+    ddx_var = ddx.var() + 1e-8
+    hjorth_mob = np.sqrt(dx_var / data_var)
+    f[44] = hjorth_mob
+    f[45] = np.sqrt(ddx_var / dx_var) / (hjorth_mob + 1e-8)
+
+    # Mean abs second derivative (f52)
+    if len(ddx) > 0:
+        f[52] = np.mean(np.abs(ddx))
+
+    return f[active_idx]
+
 
 # ================= Main Scaler Fitting =================
 TRAINING_DATA_DIR = PROJECT_ROOT / "training_data"
@@ -82,32 +162,22 @@ for file_path in tqdm(parquet_files, desc="Processing files"):
         print(f"  Too short ({len(resistance)} samples) — skipping")
         continue
 
-    extractor = ClotFeatureExtractor(sample_rate=SAMPLE_RATE, window_sec=WINDOW_SEC)
     run_features = []   # single feature vectors for this run
 
-    window_samples = extractor.window_size
-
     # Precompute lfilter coefficients for vectorized EMA
-    af = extractor.alpha_fast
-    asl = extractor.alpha_slow
-    b_f, a_f = np.array([af]), np.array([1.0, -(1.0 - af)])
-    b_s, a_s = np.array([asl]), np.array([1.0, -(1.0 - asl)])
+    b_f, a_f = np.array([ALPHA_FAST]), np.array([1.0, -(1.0 - ALPHA_FAST)])
+    b_s, a_s = np.array([ALPHA_SLOW]), np.array([1.0, -(1.0 - ALPHA_SLOW)])
 
-    for start in range(0, len(resistance) - window_samples + 1, STRIDE_SAMPLES):
-        window_res = resistance[start : start + window_samples]
+    for start in range(0, len(resistance) - WINDOW_SAMPLES + 1, STRIDE_SAMPLES):
+        window_res = resistance[start : start + WINDOW_SAMPLES]
 
-        # Direct buffer set + vectorized EMA (replaces per-sample update loop)
-        extractor.buffer = deque(window_res, maxlen=window_samples)
+        # Vectorized EMA via lfilter
         r0 = float(window_res[0])
-        ema_f, _ = lfilter(b_f, a_f, window_res.astype(np.float64), zi=[r0 * (1.0 - af)])
-        ema_s, _ = lfilter(b_s, a_s, window_res.astype(np.float64), zi=[r0 * (1.0 - asl)])
-        extractor.ema_fast = float(ema_f[-1])
-        extractor.ema_slow = float(ema_s[-1])
+        ema_f, _ = lfilter(b_f, a_f, window_res.astype(np.float64), zi=[r0 * (1.0 - ALPHA_FAST)])
+        ema_s, _ = lfilter(b_s, a_s, window_res.astype(np.float64), zi=[r0 * (1.0 - ALPHA_SLOW)])
 
-        feats_all = extractor.compute_features()
-
-        if feats_all is not None and len(feats_all) == TOTAL_FEATURES:
-            feats = feats_all[active_idx]
+        feats = compute_active_features_fast(window_res, float(ema_f[-1]), float(ema_s[-1]))
+        if feats is not None:
             run_features.append(feats)
 
     global_features.extend(run_features)

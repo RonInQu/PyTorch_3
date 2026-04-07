@@ -19,6 +19,8 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import TensorDataset, DataLoader
 
 import joblib
+from scipy.signal import lfilter
+from scipy import stats as sp_stats
 from sklearn.model_selection import GroupKFold
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import f1_score, confusion_matrix
@@ -29,7 +31,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # Import from gru_torch_V5 (single source of truth)
 from src.models.gru_torch_V5 import ClotFeatureExtractor, ClotGRU, \
-    FEATURE_SET, SEQ_LEN, WINDOW_SEC, \
+    FEATURE_SET, TOTAL_FEATURES, SEQ_LEN, WINDOW_SEC, \
     active_idx, active_dim, dim_str
 
 # ────────────────────────────────────────────────
@@ -103,6 +105,96 @@ CLASS_NAMES = ['blood', 'clot', 'wall']
 CLINICAL_WEIGHTS = [1.0, 1.0, 1.0]
 
 # ────────────────────────────────────────────────
+# Fast feature extractor (active features only — skips FFT, slopes, sample entropy)
+# ────────────────────────────────────────────────
+
+_SUPPORTED_FEATURES = {0, 1, 3, 4, 5, 9, 17, 19, 20, 21, 23, 27, 28, 29, 32, 34, 38, 39, 44, 45, 52}
+_unsupported = set(active_idx) - _SUPPORTED_FEATURES
+if _unsupported:
+    print(f"ERROR: active_idx contains features {_unsupported} not supported by fast extractor.")
+    print(f"       Update compute_active_features_fast() or use full ClotFeatureExtractor.")
+    sys.exit(1)
+
+# Read EMA constants from canonical source
+_ext = ClotFeatureExtractor(sample_rate=150, window_sec=WINDOW_SEC)
+WINDOW_SAMPLES = _ext.window_size
+ALPHA_FAST = _ext.alpha_fast
+ALPHA_SLOW = _ext.alpha_slow
+del _ext
+
+# lfilter coefficients (reused across all runs)
+_B_FAST = np.array([ALPHA_FAST])
+_A_FAST = np.array([1.0, -(1.0 - ALPHA_FAST)])
+_B_SLOW = np.array([ALPHA_SLOW])
+_A_SLOW = np.array([1.0, -(1.0 - ALPHA_SLOW)])
+
+
+def compute_active_features_fast(data, ema_fast, ema_slow):
+    """
+    Compute ONLY the 21 clot_wall_focused features directly.
+    No FFT, no slopes, no sample entropy, no 53-element array.
+    Returns array of shape (active_dim,) in active_idx order.
+    """
+    n = len(data)
+    if n < 100:
+        return None
+
+    # Shared intermediates (computed once, reused)
+    data_mean = data.mean()
+    data_std = data.std()
+    deriv = np.diff(data)
+    ddx = np.diff(deriv)
+    data_var = data.var() + 1e-8
+    dx_var = deriv.var() + 1e-8
+    ddx_var = ddx.var() + 1e-8
+    hjorth_mob = np.sqrt(dx_var / data_var)
+
+    # Detrended residual
+    kernel = 450
+    if n >= kernel:
+        trend = np.convolve(data, np.ones(kernel) / kernel, 'valid')
+        detr = data[-len(trend):] - trend
+        r600 = detr[-min(600, len(detr)):]
+    else:
+        r600 = np.zeros(1, dtype=np.float32)
+
+    # Diff of last 500
+    if n >= 500:
+        diff_500 = np.diff(data[-500:])
+    else:
+        diff_500 = None
+
+    p95 = np.percentile(data, 95)
+
+    # Build output in active_idx order:
+    # [39, 21, 4, 19, 45, 9, 5, 23, 0, 34, 28, 29, 3, 38, 17, 32, 52, 27, 1, 20, 44]
+    f = np.array([
+        np.sum(data > p95) / n,                                      # f39: frac above p95
+        sp_stats.kurtosis(deriv) if len(deriv) >= 4 else 0,          # f21: deriv kurtosis
+        data.max(),                                                   # f4:  max
+        np.mean(np.abs(deriv)) if len(deriv) > 10 else 0,            # f19: mean abs deriv
+        np.sqrt(ddx_var / dx_var) / (hjorth_mob + 1e-8),             # f45: Hjorth complexity
+        np.mean(np.abs(diff_500)) if diff_500 is not None else 0,    # f9:  mean abs diff last 500
+        np.ptp(data),                                                 # f5:  range (max-min)
+        ema_slow,                                                     # f23: EMA slow
+        data_mean,                                                    # f0:  mean
+        sp_stats.skew(r600) if len(r600) >= 3 else 0,                # f34: detrended skew
+        np.std(r600),                                                 # f28: detrended std
+        np.std(r600[:300]) if len(r600) >= 300 else 0,               # f29: detrended std first 300
+        data.min(),                                                   # f3:  min
+        p95 - np.percentile(data, 5),                                 # f38: p95 - p5
+        deriv.std() if len(deriv) > 10 else 0,                       # f17: deriv std
+        np.std(diff_500) if diff_500 is not None else 0,             # f32: std diff last 500
+        np.mean(np.abs(ddx)) if len(ddx) > 0 else 0,                # f52: mean abs 2nd deriv
+        np.abs(ema_fast - ema_slow),                                  # f27: abs(EMA fast - slow)
+        data_std,                                                     # f1:  std
+        sp_stats.skew(deriv) if len(deriv) >= 3 else 0,              # f20: deriv skew
+        hjorth_mob,                                                   # f44: Hjorth mobility
+    ], dtype=np.float32)
+
+    return f
+
+# ────────────────────────────────────────────────
 # Utility Functions (from your V3)
 # ────────────────────────────────────────────────
 
@@ -172,12 +264,11 @@ def load_or_extract_features(force_extract: bool = False):
         groups = data['groups']
         print(f"Loaded: {X_seq.shape[0]} sequences | shape={X_seq.shape}")
     else:
-        print("Extracting features (this may take a while)...")
+        print("Extracting features (fast path — active features only)...")
         data_files = sorted(DATA_DIR.glob("*.parquet"))
         all_data = [pd.read_parquet(f).assign(run_id=f.stem) for f in data_files]
         df_all = pd.concat(all_data, ignore_index=True)
 
-        extractor = ClotFeatureExtractor(sample_rate=150, window_sec=WINDOW_SEC)
         seq_list = []
         labels_list = []
         groups_list = []
@@ -185,35 +276,40 @@ def load_or_extract_features(force_extract: bool = False):
         for run_id, group in df_all.groupby('run_id'):
             resistance = group['magRLoadAdjusted'].to_numpy(dtype=np.float32)
             label_array = group['label'].values.astype(np.int64)
-        
-            extractor.reset()                    # ← reset between runs
-        
+
+            if len(resistance) < WINDOW_SAMPLES:
+                continue
+
+            # Precompute full-run EMA arrays (cumulative from run start)
+            r0 = float(resistance[0])
+            ema_f_all, _ = lfilter(_B_FAST, _A_FAST, resistance.astype(np.float64),
+                                   zi=[r0 * (1.0 - ALPHA_FAST)])
+            ema_s_all, _ = lfilter(_B_SLOW, _A_SLOW, resistance.astype(np.float64),
+                                   zi=[r0 * (1.0 - ALPHA_SLOW)])
+
+            # Extraction indices (same as original streaming logic)
+            extraction_indices = np.arange(WINDOW_SAMPLES - 1, len(resistance), STRIDE_SAMPLES)
+
             run_features = []
             run_labels = []
-            window_size = extractor.window_size
-        
-            for idx, r in enumerate(resistance):
-                extractor.update(r)              # each sample fed exactly once
-        
-                # Extract features once we have a full window, every STRIDE_SAMPLES steps
-                samples_in = idx + 1
-                if samples_in >= window_size and (samples_in - window_size) % STRIDE_SAMPLES == 0:
-                    feats_all = extractor.compute_features()
-                    feats = feats_all[active_idx]
-        
-                    # Label from the current window [idx-window_size+1 .. idx]
-                    win_start = idx - window_size + 1
-                    window_label = int(np.max(label_array[win_start:idx + 1]))
-        
+
+            for idx in extraction_indices:
+                win_start = idx - WINDOW_SAMPLES + 1
+                window_data = resistance[win_start : idx + 1]
+
+                feats = compute_active_features_fast(
+                    window_data, float(ema_f_all[idx]), float(ema_s_all[idx])
+                )
+                if feats is not None:
                     run_features.append(feats)
+                    window_label = int(label_array[win_start : idx + 1].max())
                     run_labels.append(window_label)
 
             # Build sequences
             for i in range(SEQ_LEN - 1, len(run_features)):
                 seq = np.array(run_features[i - SEQ_LEN + 1 : i + 1])
-                seq_label = run_labels[i]
                 seq_list.append(seq)
-                labels_list.append(seq_label)
+                labels_list.append(run_labels[i])
                 groups_list.append(run_id)
 
         X_seq = np.array(seq_list, dtype=np.float32)
