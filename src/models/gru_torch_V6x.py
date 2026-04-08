@@ -43,9 +43,6 @@ REPORT_INTERVAL_MS = 200
 GRU_OVERRIDE_THRD_CLOT = 0.80
 GRU_OVERRIDE_THRD_WALL = 0.92
 
-# Temperature scaling for softmax (T>1 = less confident, T=1 = no change)
-TEMPERATURE = 1.5
-
 # Feature set selection
 FEATURE_SET = "clot_wall_focused"
 
@@ -339,9 +336,7 @@ class LiveClotDetector:
         if self.hidden is not None:
             self.hidden = self.hidden.detach()
 
-        # Temperature-scaled softmax (T>1 → softer, more calibrated probs)
-        probs = torch.softmax(logits / TEMPERATURE, 1).squeeze(0).cpu().numpy()
-        self.raw_probs = probs.copy()   # store for diagnostics
+        probs = torch.softmax(logits, 1).squeeze(0).cpu().numpy()
 
         prior_idx = np.argmax(self.posterior)
 
@@ -373,7 +368,7 @@ class LiveClotDetector:
             elif new_idx == prior_idx:
                 alpha_history, alpha_new = 0.96, 0.04      # confirm same class
             else:
-                alpha_history, alpha_new = 0.99, 0.01      # resist clot↔wall flicker
+                alpha_history, alpha_new = 0.995, 0.005      # resist clot↔wall flicker
 
         self.posterior = alpha_history * self.posterior + alpha_new * probs
 
@@ -421,7 +416,6 @@ def process_file(filepath: Path,
             feats = extractor.compute_features()
             da_now = da_labels[i] if da_labels is not None else None
             post = detector.predict(feats, da_now)
-            raw = detector.raw_probs
             status = np.argmax(post)
             entropy = -np.sum(post * np.log(post + 1e-12))
 
@@ -432,9 +426,6 @@ def process_file(filepath: Path,
                 'Nprob': float(post[0]),
                 'Cprob': float(post[1]),
                 'Wprob': float(post[2]),
-                'rawN': float(raw[0]),
-                'rawC': float(raw[1]),
-                'rawW': float(raw[2]),
                 'entropy': float(entropy)
             })
             last_report = t
@@ -446,8 +437,8 @@ def process_file(filepath: Path,
     results_df.to_csv(OUTPUT_FOLDER / f"{study_name}_detection_results.csv", index=False)
     print(f"  Saved detection_results.parquet")
 
-    # ── Probability plot (3 panels: labels, raw GRU, smoothed posterior) ──
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 14), sharex=True)
+    # ── Probability plot ──
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
 
     colors = {0:'black', 1:'red', 2:'blue'}
     for lbl, name in [(0,'blood'),(1,'clot'),(2,'wall')]:
@@ -458,28 +449,18 @@ def process_file(filepath: Path,
     ax1.set_title(f'{study_name} — Detected Labels')
     ax1.grid(True, alpha=0.3)
 
-    # Raw GRU probabilities (temperature-scaled)
-    ax2.plot(results_df['time'], results_df['rawC'], color='red',   label='raw P(clot)', linewidth=1.2, alpha=0.8)
-    ax2.plot(results_df['time'], results_df['rawW'], color='blue',  label='raw P(wall)', linewidth=1.2, alpha=0.8)
-    ax2.set_ylabel('Probability')
-    ax2.set_ylim(0, 1)
-    ax2.set_title(f'{study_name} — Raw GRU Probabilities (T={TEMPERATURE})')
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-
-    # Smoothed posterior
-    ax3.plot(results_df['time'], results_df['Cprob'], color='red',   label='P(clot)', linewidth=1.8)
-    ax3.plot(results_df['time'], results_df['Wprob'], color='blue',  label='P(wall)', linewidth=1.8)
+    ax2.plot(results_df['time'], results_df['Cprob'], color='red',   label='P(clot)', linewidth=1.8)
+    ax2.plot(results_df['time'], results_df['Wprob'], color='blue',  label='P(wall)', linewidth=1.8)
 
     blood_dom = (results_df['Nprob'] > results_df['Cprob']) & (results_df['Nprob'] > results_df['Wprob'])
-    ax3.fill_between(results_df['time'], 0, 1, where=blood_dom, color='gray', alpha=0.12, label='Blood dominant')
+    ax2.fill_between(results_df['time'], 0, 1, where=blood_dom, color='gray', alpha=0.12, label='Blood dominant')
 
-    ax3.set_xlabel('Time (seconds)')
-    ax3.set_ylabel('Probability')
-    ax3.set_ylim(0, 1)
-    ax3.set_title(f'{study_name} — Smoothed Posterior')
-    ax3.legend()
-    ax3.grid(True, alpha=0.3)
+    ax2.set_xlabel('Time (seconds)')
+    ax2.set_ylabel('Probability')
+    ax2.set_ylim(0, 1)
+    ax2.set_title(f'{study_name} — Clot & Wall Detection Probabilities')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(OUTPUT_FOLDER / f"{study_name}_detected_vs_clot_wall_probs.png", dpi=300, bbox_inches='tight')
