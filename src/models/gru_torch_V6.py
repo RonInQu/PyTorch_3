@@ -362,10 +362,13 @@ class LiveClotDetector:
         if prior_idx == 0:
             alpha_history, alpha_new = 0.78, 0.22
         else:
-            if np.argmax(probs) == 0:
-                alpha_history, alpha_new = 0.35, 0.65
+            new_idx = np.argmax(probs)
+            if new_idx == 0:
+                alpha_history, alpha_new = 0.35, 0.65      # quick exit to blood
+            elif new_idx == prior_idx:
+                alpha_history, alpha_new = 0.96, 0.04      # confirm same class
             else:
-                alpha_history, alpha_new = 0.96, 0.04
+                alpha_history, alpha_new = 0.995, 0.005      # resist clot↔wall flicker
 
         self.posterior = alpha_history * self.posterior + alpha_new * probs
 
