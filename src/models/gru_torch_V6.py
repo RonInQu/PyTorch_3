@@ -373,7 +373,7 @@ class LiveClotDetector:
             elif new_idx == prior_idx:
                 alpha_history, alpha_new = 0.96, 0.04      # confirm same class
             else:
-                alpha_history, alpha_new = 0.99, 0.01      # resist clot↔wall flicker
+                alpha_history, alpha_new = 0.995, 0.005     # resist clot↔wall flicker
 
         self.posterior = alpha_history * self.posterior + alpha_new * probs
 
