@@ -51,29 +51,29 @@ TEMPERATURE = 1.5
 # alpha_history = weight on previous posterior, alpha_new = weight on new probs.
 # Higher alpha_history → slower/more stable; higher alpha_new → faster/more reactive.
 EMA_BLOOD_PRIOR_HISTORY = 0.78   # when prior state is blood: moderate reactivity
-EMA_BLOOD_PRIOR_NEW     = 0.22
+EMA_BLOOD_PRIOR_NEW     = 1 - EMA_BLOOD_PRIOR_HISTORY
 EMA_EXIT_TO_BLOOD_HISTORY = 0.35 # leaving clot/wall back to blood: fast transition
-EMA_EXIT_TO_BLOOD_NEW     = 0.65
+EMA_EXIT_TO_BLOOD_NEW     = 1 - EMA_EXIT_TO_BLOOD_HISTORY
 EMA_SAME_CLASS_HISTORY  = 0.96   # confirming same non-blood class: very stable
-EMA_SAME_CLASS_NEW      = 0.04
+EMA_SAME_CLASS_NEW      = 1 - EMA_SAME_CLASS_HISTORY
 EMA_CROSS_CLASS_HISTORY = 0.99   # resisting clot↔wall flicker: nearly locked
-EMA_CROSS_CLASS_NEW     = 0.01
+EMA_CROSS_CLASS_NEW     = 1 - EMA_CROSS_CLASS_HISTORY
 
 # ── DA (device-assisted) label override confidence ──
 # When the device provides a label, we construct a probability vector
 # with this much confidence on the labeled class.
-DA_LABEL_CONFIDENCE     = 0.92   # confidence assigned to the DA-labeled class
-DA_OTHER_CONFIDENCE     = 0.04   # split equally among the other two classes
+DA_LABEL_CONFIDENCE = 0.92   # confidence assigned to the DA-labeled class
+DA_OTHER_CONFIDENCE = (1.0 - DA_LABEL_CONFIDENCE) / 2  # 0.04   # split equally among the other two classes
 
 # ── Initial posterior (blood-dominant prior) ──
 # Starting belief before any data: mostly blood.
 # Increase INIT_BLOOD_PROB to make the detector more conservative (slower to leave blood).
 INIT_BLOOD_PROB = 0.95
-INIT_CLOT_PROB  = 0.025
-INIT_WALL_PROB  = 0.025
+INIT_CLOT_PROB  = (1 - INIT_BLOOD_PROB) /2
+INIT_WALL_PROB  = (1 - INIT_BLOOD_PROB) /2
 
 # Feature set selection
-FEATURE_SET = "all"
+FEATURE_SET = "clot_wall_focused"
 
 TOTAL_FEATURES = 43
 
