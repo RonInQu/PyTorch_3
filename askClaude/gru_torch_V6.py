@@ -46,6 +46,32 @@ GRU_OVERRIDE_THRD_WALL = 0.92
 # Temperature scaling for softmax (T>1 = less confident, T=1 = no change)
 TEMPERATURE = 1.5
 
+# ── Posterior EMA (exponential moving average) blending weights ──
+# Controls how fast the smoothed posterior responds to new GRU outputs.
+# alpha_history = weight on previous posterior, alpha_new = weight on new probs.
+# Higher alpha_history → slower/more stable; higher alpha_new → faster/more reactive.
+EMA_BLOOD_PRIOR_HISTORY = 0.78   # when prior state is blood: moderate reactivity
+EMA_BLOOD_PRIOR_NEW     = 0.22
+EMA_EXIT_TO_BLOOD_HISTORY = 0.35 # leaving clot/wall back to blood: fast transition
+EMA_EXIT_TO_BLOOD_NEW     = 0.65
+EMA_SAME_CLASS_HISTORY  = 0.96   # confirming same non-blood class: very stable
+EMA_SAME_CLASS_NEW      = 0.04
+EMA_CROSS_CLASS_HISTORY = 0.99   # resisting clot↔wall flicker: nearly locked
+EMA_CROSS_CLASS_NEW     = 0.01
+
+# ── DA (device-assisted) label override confidence ──
+# When the device provides a label, we construct a probability vector
+# with this much confidence on the labeled class.
+DA_LABEL_CONFIDENCE     = 0.92   # confidence assigned to the DA-labeled class
+DA_OTHER_CONFIDENCE     = 0.04   # split equally among the other two classes
+
+# ── Initial posterior (blood-dominant prior) ──
+# Starting belief before any data: mostly blood.
+# Increase INIT_BLOOD_PROB to make the detector more conservative (slower to leave blood).
+INIT_BLOOD_PROB = 0.95
+INIT_CLOT_PROB  = 0.025
+INIT_WALL_PROB  = 0.025
+
 # Feature set selection
 FEATURE_SET = "all"
 
@@ -313,19 +339,52 @@ class LiveClotDetector:
         self.model.eval()
 
         self.hidden = None
-        self.posterior = np.array([0.95, 0.025, 0.025], dtype=np.float32)
+        self.posterior = np.array([INIT_BLOOD_PROB, INIT_CLOT_PROB, INIT_WALL_PROB],
+                                  dtype=np.float32)
         self.feat_history = deque(maxlen=SEQ_LEN)
+
+    def _make_da_probs(self, da_label):
+        """Build a probability vector heavily favoring the DA-labeled class.
+        Tune DA_LABEL_CONFIDENCE (default 0.92) to control how strongly
+        the device-assisted label overrides the GRU output.
+        """
+        da_probs = np.array([DA_OTHER_CONFIDENCE] * 3, dtype=np.float32)
+        da_probs[da_label] = DA_LABEL_CONFIDENCE
+        return da_probs
+
+    def _da_should_override_gru(self, probs, da_label, strict=False):
+        """Return True if the GRU is not confident enough to contradict the DA label.
+        Tune GRU_OVERRIDE_THRD_CLOT / GRU_OVERRIDE_THRD_WALL to control
+        how easily the DA label wins over the GRU prediction.
+        Higher threshold → DA label wins more often.
+        strict=False: use <=  (pre-EMA check, slightly more permissive)
+        strict=True:  use <   (post-EMA safety net, slightly less permissive)
+        """
+        gru_top_idx = np.argmax(probs)
+        if gru_top_idx == da_label:
+            return False  # GRU already agrees with DA
+        threshold = GRU_OVERRIDE_THRD_CLOT if da_label == 1 else GRU_OVERRIDE_THRD_WALL
+        if strict:
+            return probs[gru_top_idx] < threshold
+        return probs[gru_top_idx] <= threshold
 
     @torch.no_grad()
     def predict(self, active_feats, da_label=None):
         """
-        active_feats: already-selected active features (active_dim,).
-        The extractor returns these directly when active_features is set.
-        """
-        scaled = self.scaler.transform(active_feats.reshape(1, -1))[0]
+        Run one prediction step.  Returns a 3-element posterior [P(blood), P(clot), P(wall)].
 
+        Pipeline:
+          1. Scale features, build sequence, run GRU → raw probs
+          2. If DA label present, optionally override GRU probs
+          3. EMA-blend new probs into the running posterior
+          4. Post-EMA safety check: force DA label if GRU still disagrees
+        """
+
+        # ── Step 1: Scale features & run GRU ──
+        scaled = self.scaler.transform(active_feats.reshape(1, -1))[0]
         self.feat_history.append(scaled)
 
+        # Pad the sequence with the earliest available frame if we don't have SEQ_LEN yet
         if len(self.feat_history) < SEQ_LEN:
             pad = list(self.feat_history)[0] if self.feat_history else scaled
             seq_list = [pad] * (SEQ_LEN - len(self.feat_history)) + list(self.feat_history)
@@ -339,53 +398,65 @@ class LiveClotDetector:
         if self.hidden is not None:
             self.hidden = self.hidden.detach()
 
-        # Temperature-scaled softmax (T>1 → softer, more calibrated probs)
+        # Temperature-scaled softmax.  Tune TEMPERATURE (>1 → softer/less peaky probs)
         probs = torch.softmax(logits / TEMPERATURE, 1).squeeze(0).cpu().numpy()
-        self.raw_probs = probs.copy()   # store for diagnostics
+        self.raw_probs = probs.copy()  # store for diagnostics
 
-        prior_idx = np.argmax(self.posterior)
+        prior_idx = np.argmax(self.posterior)  # class the posterior currently favors
 
+        # ── Step 2: DA (device-assisted) label override ──
+        # When the device provides a ground-truth label, trust it unless the
+        # GRU is extremely confident in a different class.
         if da_label is not None:
             if da_label == 0:
+                # DA says blood → hard reset: clear history and return certain blood.
                 self.posterior = np.array([1.0, 0.0, 0.0], dtype=np.float32)
                 self.hidden = None
                 self.feat_history.clear()
                 return self.posterior.copy()
 
             elif da_label in (1, 2):
-                da_probs = np.array([0.0, 0.0, 0.0], dtype=np.float32)
-                da_probs[da_label] = 0.92
-                da_probs[0] = 0.04
-                da_probs[3 - da_label] = 0.04
+                # DA says clot or wall → override GRU if GRU isn't confident enough
+                if self._da_should_override_gru(probs, da_label):
+                    probs = self._make_da_probs(da_label)
 
-                gru_top_idx = np.argmax(probs)
-                if gru_top_idx != da_label:
-                    thrd = GRU_OVERRIDE_THRD_CLOT if da_label == 1 else GRU_OVERRIDE_THRD_WALL
-                    if probs[gru_top_idx] <= thrd:
-                        probs = da_probs
-
+        # ── Step 3: EMA blending ──
+        # Blend new probs into the running posterior.  The blend weights depend
+        # on what transition is happening, to control responsiveness vs stability.
+        #
+        # Tuning guide:
+        #   - EMA_BLOOD_PRIOR:   when currently in blood. More NEW → faster clot/wall detection.
+        #   - EMA_EXIT_TO_BLOOD: leaving clot/wall back to blood. More NEW → faster recovery.
+        #   - EMA_SAME_CLASS:    staying in same non-blood class. More HISTORY → more stable.
+        #   - EMA_CROSS_CLASS:   clot↔wall switch. More HISTORY → resist flicker.
         if prior_idx == 0:
-            alpha_history, alpha_new = 0.78, 0.22
+            # Currently in blood — moderately reactive to new evidence
+            alpha_history = EMA_BLOOD_PRIOR_HISTORY
+            alpha_new     = EMA_BLOOD_PRIOR_NEW
         else:
             new_idx = np.argmax(probs)
             if new_idx == 0:
-                alpha_history, alpha_new = 0.35, 0.65      # quick exit to blood
+                # Transitioning back to blood — respond quickly
+                alpha_history = EMA_EXIT_TO_BLOOD_HISTORY
+                alpha_new     = EMA_EXIT_TO_BLOOD_NEW
             elif new_idx == prior_idx:
-                alpha_history, alpha_new = 0.96, 0.04      # confirm same class
+                # Confirming same non-blood class — stay very stable
+                alpha_history = EMA_SAME_CLASS_HISTORY
+                alpha_new     = EMA_SAME_CLASS_NEW
             else:
-                alpha_history, alpha_new = 0.99, 0.01      # resist clot↔wall flicker
+                # Clot↔wall switch — resist flicker, change very slowly
+                alpha_history = EMA_CROSS_CLASS_HISTORY
+                alpha_new     = EMA_CROSS_CLASS_NEW
 
         self.posterior = alpha_history * self.posterior + alpha_new * probs
 
+        # ── Step 4: Post-EMA DA safety net ──
+        # After blending, if the posterior still disagrees with the DA label
+        # and the GRU wasn't confident enough, force the posterior to the DA label.
         if da_label in (1, 2):
             final_idx = np.argmax(self.posterior)
-            if final_idx != da_label:
-                gru_top_idx = np.argmax(probs)
-                thrd = GRU_OVERRIDE_THRD_CLOT if da_label == 1 else GRU_OVERRIDE_THRD_WALL
-                if probs[gru_top_idx] < thrd:
-                    da_probs = np.array([0.04, 0.04, 0.04], dtype=np.float32)
-                    da_probs[da_label] = 0.92
-                    self.posterior = da_probs
+            if final_idx != da_label and self._da_should_override_gru(probs, da_label, strict=True):
+                self.posterior = self._make_da_probs(da_label)
 
         return self.posterior.copy()
 
