@@ -60,11 +60,11 @@ _B_SLOW = np.array([ALPHA_SLOW])
 _A_SLOW = np.array([1.0, -(1.0 - ALPHA_SLOW)])
 
 # ================= Main Scaler Fitting =================
-TRAINING_DATA_DIR = PROJECT_ROOT / "training_data"
+TRAINING_DATA_DIR = PROJECT_ROOT / "training_data_denoised"
 
 print(f"\nLooking for parquet files in: {TRAINING_DATA_DIR}")
 
-parquet_files = list(TRAINING_DATA_DIR.glob("*_labeled_segment.parquet"))
+parquet_files = list(TRAINING_DATA_DIR.glob("*_labeled_segment_denoised.parquet"))
 if not parquet_files:
     print("No *_labeled_segment.parquet files found!")
     sys.exit(1)

@@ -27,6 +27,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from scipy import stats
+from scipy.signal import medfilt, find_peaks
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 import matplotlib.pyplot as plt
 
@@ -55,7 +56,7 @@ EMA_BLOOD_PRIOR_HISTORY = 0.78   # when prior state is blood: moderate reactivit
 EMA_BLOOD_PRIOR_NEW     = 1 - EMA_BLOOD_PRIOR_HISTORY
 EMA_EXIT_TO_BLOOD_HISTORY = 0.35 # leaving clot/wall back to blood: fast transition
 EMA_EXIT_TO_BLOOD_NEW     = 1 - EMA_EXIT_TO_BLOOD_HISTORY
-EMA_SAME_CLASS_HISTORY  = 0.94   # confirming same non-blood class: very stable
+EMA_SAME_CLASS_HISTORY  = 0.95   # confirming same non-blood class: very stable
 EMA_SAME_CLASS_NEW      = 1 - EMA_SAME_CLASS_HISTORY
 EMA_CROSS_CLASS_HISTORY = 0.99   # resisting clot↔wall flicker: nearly locked
 EMA_CROSS_CLASS_NEW     = 1 - EMA_CROSS_CLASS_HISTORY
@@ -76,7 +77,7 @@ INIT_WALL_PROB  = (1 - INIT_BLOOD_PROB) /2
 # Feature set selection
 FEATURE_SET = "clot_wall_focused"
 
-TOTAL_FEATURES = 44
+TOTAL_FEATURES = 46
 
 # Paths
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -94,17 +95,20 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent
 # f40:     Hjorth mobility
 # f41:     Hjorth complexity
 # f42:     Mean absolute 2nd derivative
-# f43:     Flatness (fraction of window with near-zero local slope — high = flat/wall)
+# f43:     Pulse amplitude (std of extracted cardiac pulse component)
+# f44:     Pulse-to-signal ratio (pulse_std / signal_std)
+# f45:     Pulse rate (peaks per second in pulse component)
 
 FEATURE_SETS = {
     "all":               list(range(TOTAL_FEATURES)),
     "original_40":       list(range(40)),
     "clean_36":          [i for i in range(40) if i not in [14, 25, 31, 33]],
     "top20":             [4, 0, 1, 9, 23, 3, 21, 19, 30, 32, 15, 36, 27, 24, 16, 12, 8, 34, 20, 10],
-    # d(clt-wall) > 0.15 — clot vs wall distinguishing features + flatness
-    "clot_wall_focused": [39, 21, 4, 19, 41, 9, 5, 23, 0, 34, 28, 29, 3, 38, 17, 32, 42, 27, 1, 20, 40, 43],
-    # per-run AUC >= 0.65 (clot vs wall), spectral removed → 20 features + flatness
-    "auc_cw_20":         [0, 1, 3, 4, 5, 6, 9, 17, 18, 19, 21, 22, 23, 32, 33, 38, 39, 40, 41, 42, 43],
+    # d(clt-wall) > 0.15 — clot vs wall distinguishing features + pulse
+    "clot_wall_focused": [39, 21, 4, 19, 41, 9, 5, 23, 0, 34, 28, 29, 3, 38, 17, 32, 42, 27, 1, 20, 40],
+    "clot_wall_focused_pulse": [39, 21, 4, 19, 41, 9, 5, 23, 0, 34, 28, 29, 3, 38, 17, 32, 42, 27, 1, 20, 40, 43, 44, 45],
+    # per-run AUC >= 0.65 (clot vs wall), spectral removed → 20 features + pulse
+    "auc_cw_20":         [0, 1, 3, 4, 5, 6, 9, 17, 18, 19, 21, 22, 23, 32, 33, 38, 39, 40, 41, 42, 43, 44, 45],
 }
 
 # ────────────────────────────────────────────────
@@ -130,7 +134,7 @@ class ClotFeatureExtractor:
     _PERCENTILES = set(range(36, 40))
     _HJORTH      = {40, 41}
     _DERIV2      = {42}
-    _FLATNESS    = {43}
+    _PULSE       = {43, 44, 45}
 
     def __init__(self, sample_rate=150, window_sec=5.0, active_features=None):
         self.fs = sample_rate
@@ -158,9 +162,9 @@ class ClotFeatureExtractor:
         self._need_percentiles = bool(aset & self._PERCENTILES)
         self._need_hjorth      = bool(aset & self._HJORTH)
         self._need_deriv2      = bool(aset & self._DERIV2)
-        self._need_flatness    = bool(aset & self._FLATNESS)
-        # Shared dependency: first derivative needed by deriv, hjorth, deriv2, or flatness
-        self._need_deriv_data  = self._need_deriv or self._need_hjorth or self._need_deriv2 or self._need_flatness
+        self._need_pulse       = bool(aset & self._PULSE)
+        # Shared dependency: first derivative needed by deriv, hjorth, or deriv2
+        self._need_deriv_data  = self._need_deriv or self._need_hjorth or self._need_deriv2
 
     def reset(self):
         self.buffer.clear()
@@ -280,28 +284,33 @@ class ClotFeatureExtractor:
             if self._need_deriv2:
                 f[42] = np.mean(np.abs(ddx))
 
-        # ── f43: Flatness ──
-        # Fraction of short segments in the window where |local slope| ≈ 0.
-        # High values (→ 1.0) indicate a flat, wall-like signal.
-        # Low values indicate an active/changing signal (clot or blood).
-        # Uses 1-second sub-windows; a segment is "flat" if its abs slope
-        # is below the median abs slope of the full window.
-        if self._need_flatness and deriv is not None and len(deriv) > 1:
-            seg_len = self.fs  # 1-second segments (150 samples)
-            if n >= seg_len * 2:
-                # Compute absolute slope for each 1-second segment
-                n_segs = n // seg_len
-                abs_slopes = np.empty(n_segs, dtype=np.float32)
-                for s in range(n_segs):
-                    seg = data[s * seg_len:(s + 1) * seg_len]
-                    slope = np.polyfit(np.arange(seg_len), seg, 1)[0]
-                    abs_slopes[s] = np.abs(slope) if np.isfinite(slope) else 0.0
-                # Threshold: segment is "flat" if slope < median of all segments
-                # (adaptive to each window's own activity level)
-                threshold = np.median(abs_slopes) * 0.5
-                f[43] = np.mean(abs_slopes <= threshold)
+        # ── f43-f45: Pulse features ──
+        # Extract cardiac pulse component via in-window median filter,
+        # then compute features from the noise itself.
+        # f43: Pulse amplitude — std of the pulse component.
+        #      Blood → high (strong coupling), Clot → low (damped), Wall → variable.
+        # f44: Pulse-to-signal ratio — pulse_std / signal_std.
+        #      Normalizes for baseline level; high = signal is mostly pulse.
+        # f45: Pulse rate — detected peaks per second in the pulse component.
+        #      Regular cardiac contact → ~1-3 Hz; no coupling → 0.
+        if self._need_pulse:
+            _MED_KERNEL = int(self.fs * 1.5) | 1  # 1.5s median — fits in 5s window
+            if n >= _MED_KERNEL:
+                trend = medfilt(data, kernel_size=_MED_KERNEL)
+                pulse = data - trend
+                pulse_std = np.std(pulse)
+                f[43] = pulse_std
+                f[44] = pulse_std / (f[1] + 1e-8) if self._need_stats else pulse_std / (np.std(data) + 1e-8)
+                # Count peaks in pulse component
+                if pulse_std > 0.05:
+                    _min_dist = int(0.15 * self.fs)  # 200 BPM ceiling
+                    peaks, _ = find_peaks(pulse, height=pulse_std * 0.4, distance=_min_dist)
+                    window_sec = n / self.fs
+                    f[45] = len(peaks) / window_sec  # peaks per second
+                else:
+                    f[45] = 0.0
             else:
-                f[43] = 0.0
+                f[43] = f[44] = f[45] = 0.0
 
         if self._active_features is not None:
             return f[self._active_features]
@@ -318,7 +327,8 @@ dim_str = f"{FEATURE_SET}_{active_dim}_{_idx_hash:04x}"
 
 SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
 MODEL_PATH = PROJECT_ROOT / "src" / "training" / "clot_gru_trained.pt"
-TEST_DATA_DIR = PROJECT_ROOT / "test_data"
+USE_DENOISED = True   # Set True to use pulse-subtracted data from test_data_denoised/
+TEST_DATA_DIR = PROJECT_ROOT / ("test_data_denoised" if USE_DENOISED else "test_data")
 OUTPUT_FOLDER = PROJECT_ROOT / "inference_deploy" / "Results"
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -682,8 +692,9 @@ def process_file(filepath: Path,
 # ────────────────────────────────────────────────
 
 def main():
-    files = sorted(TEST_DATA_DIR.glob("*_labeled_segment.parquet"))
-    print(f"Found {len(files)} labeled_segment files.\n")
+    glob_pattern = "*_labeled_segment_denoised.parquet" if USE_DENOISED else "*_labeled_segment.parquet"
+    files = sorted(TEST_DATA_DIR.glob(glob_pattern))
+    print(f"Found {len(files)} files in {TEST_DATA_DIR.name}/\n")
 
     all_gt_labels     = []
     all_da_labels     = []

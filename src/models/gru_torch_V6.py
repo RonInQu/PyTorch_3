@@ -55,7 +55,7 @@ EMA_BLOOD_PRIOR_HISTORY = 0.78   # when prior state is blood: moderate reactivit
 EMA_BLOOD_PRIOR_NEW     = 1 - EMA_BLOOD_PRIOR_HISTORY
 EMA_EXIT_TO_BLOOD_HISTORY = 0.35 # leaving clot/wall back to blood: fast transition
 EMA_EXIT_TO_BLOOD_NEW     = 1 - EMA_EXIT_TO_BLOOD_HISTORY
-EMA_SAME_CLASS_HISTORY  = 0.94   # confirming same non-blood class: very stable
+EMA_SAME_CLASS_HISTORY  = 0.95   # confirming same non-blood class: very stable
 EMA_SAME_CLASS_NEW      = 1 - EMA_SAME_CLASS_HISTORY
 EMA_CROSS_CLASS_HISTORY = 0.99   # resisting clot↔wall flicker: nearly locked
 EMA_CROSS_CLASS_NEW     = 1 - EMA_CROSS_CLASS_HISTORY
@@ -102,9 +102,9 @@ FEATURE_SETS = {
     "clean_36":          [i for i in range(40) if i not in [14, 25, 31, 33]],
     "top20":             [4, 0, 1, 9, 23, 3, 21, 19, 30, 32, 15, 36, 27, 24, 16, 12, 8, 34, 20, 10],
     # d(clt-wall) > 0.15 — clot vs wall distinguishing features + flatness
-    "clot_wall_focused": [39, 21, 4, 19, 41, 9, 5, 23, 0, 34, 28, 29, 3, 38, 17, 32, 42, 27, 1, 20, 40, 43],
+    "clot_wall_focused": [39, 21, 4, 19, 41, 9, 5, 23, 0, 34, 28, 29, 3, 38, 17, 32, 42, 27, 1, 20, 40],
     # per-run AUC >= 0.65 (clot vs wall), spectral removed → 20 features + flatness
-    "auc_cw_20":         [0, 1, 3, 4, 5, 6, 9, 17, 18, 19, 21, 22, 23, 32, 33, 38, 39, 40, 41, 42, 43],
+    "auc_cw_20":         [0, 1, 3, 4, 5, 6, 9, 17, 18, 19, 21, 22, 23, 32, 33, 38, 39, 40, 41, 42],
 }
 
 # ────────────────────────────────────────────────
@@ -318,7 +318,8 @@ dim_str = f"{FEATURE_SET}_{active_dim}_{_idx_hash:04x}"
 
 SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
 MODEL_PATH = PROJECT_ROOT / "src" / "training" / "clot_gru_trained.pt"
-TEST_DATA_DIR = PROJECT_ROOT / "test_data"
+USE_DENOISED = True   # Set True to use pulse-subtracted data from test_data_denoised/
+TEST_DATA_DIR = PROJECT_ROOT / ("test_data_denoised" if USE_DENOISED else "test_data")
 OUTPUT_FOLDER = PROJECT_ROOT / "inference_deploy" / "Results"
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -682,8 +683,9 @@ def process_file(filepath: Path,
 # ────────────────────────────────────────────────
 
 def main():
-    files = sorted(TEST_DATA_DIR.glob("*_labeled_segment.parquet"))
-    print(f"Found {len(files)} labeled_segment files.\n")
+    glob_pattern = "*_labeled_segment_denoised.parquet" if USE_DENOISED else "*_labeled_segment.parquet"
+    files = sorted(TEST_DATA_DIR.glob(glob_pattern))
+    print(f"Found {len(files)} files in {TEST_DATA_DIR.name}/\n")
 
     all_gt_labels     = []
     all_da_labels     = []
