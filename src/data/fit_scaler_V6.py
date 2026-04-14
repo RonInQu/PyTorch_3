@@ -89,14 +89,27 @@ for file_path in tqdm(parquet_files, desc="Processing files"):
 
     df = df[required_cols].copy().dropna().reset_index(drop=True)
     resistance = df['magRLoadAdjusted'].to_numpy(dtype=np.float32)
+    labels = df['label'].to_numpy(dtype=np.int64)
+
+    # Boolean mask: True where label is blood(0), clot(1), or wall(2)
+    valid_mask = np.isin(labels, [0, 1, 2])
+    n_valid = valid_mask.sum()
+    n_total = len(labels)
+    if n_valid < n_total:
+        print(f"  Filtering: {n_total - n_valid}/{n_total} unlabeled samples excluded")
 
     if len(resistance) < SAMPLE_RATE * WINDOW_SEC:
         print(f"  Too short ({len(resistance)} samples) — skipping")
         continue
 
     run_features = []
+    skipped_unlabeled = 0
 
     for start in range(0, len(resistance) - WINDOW_SAMPLES + 1, STRIDE_SAMPLES):
+        if not valid_mask[start : start + WINDOW_SAMPLES].all():
+            skipped_unlabeled += 1
+            continue  # skip windows containing unlabeled data
+
         window_res = resistance[start : start + WINDOW_SAMPLES]
 
         # Vectorized EMA via lfilter (per-window reset)
@@ -112,7 +125,8 @@ for file_path in tqdm(parquet_files, desc="Processing files"):
             run_features.append(feats)
 
     global_features.extend(run_features)
-    print(f"  → {len(run_features)} feature vectors extracted")
+    print(f"  → {len(run_features)} feature vectors extracted"
+          + (f" ({skipped_unlabeled} windows skipped — unlabeled)" if skipped_unlabeled else ""))
 
 if not global_features:
     print("No features extracted!")

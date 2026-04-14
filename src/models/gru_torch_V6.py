@@ -42,7 +42,7 @@ SEQ_LEN = 8
 WINDOW_SEC = 5.0
 REPORT_INTERVAL_MS = 200
 
-GRU_OVERRIDE_THRD_CLOT = 0.78
+GRU_OVERRIDE_THRD_CLOT = 0.80
 GRU_OVERRIDE_THRD_WALL = 0.92
 
 # Temperature scaling for softmax (T>1 = less confident, T=1 = no change)
@@ -52,7 +52,7 @@ TEMPERATURE = 1.5
 # Controls how fast the smoothed posterior responds to new GRU outputs.
 # alpha_history = weight on previous posterior, alpha_new = weight on new probs.
 # Higher alpha_history → slower/more stable; higher alpha_new → faster/more reactive.
-EMA_BLOOD_PRIOR_HISTORY = 0.78   # when prior state is blood: moderate reactivity
+EMA_BLOOD_PRIOR_HISTORY = 0.8   # when prior state is blood: moderate reactivity
 EMA_BLOOD_PRIOR_NEW     = 1 - EMA_BLOOD_PRIOR_HISTORY
 EMA_EXIT_TO_BLOOD_HISTORY = 0.35 # leaving clot/wall back to blood: fast transition
 EMA_EXIT_TO_BLOOD_NEW     = 1 - EMA_EXIT_TO_BLOOD_HISTORY
@@ -75,7 +75,7 @@ INIT_CLOT_PROB  = (1 - INIT_BLOOD_PROB) /2
 INIT_WALL_PROB  = (1 - INIT_BLOOD_PROB) /2
 
 # Feature set selection
-FEATURE_SET = "clot_wall_focused_pulse"
+FEATURE_SET = "clot_wall_focused"
 
 TOTAL_FEATURES = 46
 
@@ -328,6 +328,7 @@ dim_str = f"{FEATURE_SET}_{active_dim}_{_idx_hash:04x}"
 SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
 MODEL_PATH = PROJECT_ROOT / "src" / "training" / "clot_gru_trained.pt"
 USE_DENOISED = False   # Set True to use pulse-subtracted data from test_data_denoised/
+SAVE_CSV_PARQUET = False  # Set True to save detection_results .csv and .parquet files
 TEST_DATA_DIR = PROJECT_ROOT / ("test_data_denoised" if USE_DENOISED else "test_data")
 OUTPUT_FOLDER = PROJECT_ROOT / "inference_deploy" / "Results"
 
@@ -505,7 +506,8 @@ def process_file(filepath: Path,
                  all_gt_labels: list,
                  all_da_labels: list,
                  all_ml_preds: list,
-                 all_override_times: list):
+                 all_override_times: list,
+                 save_csv_parquet: bool = False):
 
     study_name = filepath.stem
     print(f"\nProcessing: {study_name}")
@@ -549,10 +551,11 @@ def process_file(filepath: Path,
 
     results_df = pd.DataFrame(results)
 
-    # Save detection_results parquet (and csv)
-    results_df.to_parquet(OUTPUT_FOLDER / f"{study_name}_detection_results.parquet", index=False)
-    results_df.to_csv(OUTPUT_FOLDER / f"{study_name}_detection_results.csv", index=False)
-    print(f"  Saved detection_results.parquet")
+    # Save detection_results parquet and csv (optional)
+    if save_csv_parquet:
+        results_df.to_parquet(OUTPUT_FOLDER / f"{study_name}_detection_results.parquet", index=False)
+        results_df.to_csv(OUTPUT_FOLDER / f"{study_name}_detection_results.csv", index=False)
+        print(f"  Saved detection_results.parquet and .csv")
 
     # ── Probability plot (3 panels: labels, raw GRU, smoothed posterior) ──
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 14), sharex=True)
@@ -603,6 +606,15 @@ def process_file(filepath: Path,
         interp_ml = np.interp(full_times, results_df['time'], results_df['prediction'])
         interp_ml = np.round(interp_ml).astype(int)
 
+        # Filter out unlabeled samples (label == -1) before metrics
+        valid = (gt >= 0)
+        gt_valid = gt[valid]
+        da_valid = da[valid]
+        ml_valid = interp_ml[valid]
+        n_unlabeled = (~valid).sum()
+        if n_unlabeled > 0:
+            print(f"  Excluding {n_unlabeled} unlabeled samples (label == -1) from metrics")
+
         fig, axes = plt.subplots(3, 1, figsize=(14, 13), sharex=True, sharey=True,
                                  gridspec_kw={'height_ratios': [1,1,1]})
 
@@ -633,9 +645,15 @@ def process_file(filepath: Path,
 
         for ax_idx, (title, data) in enumerate([("DA Labels (full 150 Hz)", da), ("Ground Truth Labels (full 150 Hz)", gt)]):
             ax = axes[ax_idx+1]
+            # Plot unlabeled samples (label == -1) in black first (behind labeled)
+            unlabeled_mask = data == -1
+            if unlabeled_mask.any():
+                ax.scatter(full_times[unlabeled_mask], resistance[unlabeled_mask],
+                           c='black', s=2, label='unlabeled', alpha=0.4, zorder=1)
             for lbl in [0,1,2]:
                 mask = data == lbl
-                ax.scatter(full_times[mask], resistance[mask], c=colors[lbl], s=2, label=lbl_names[lbl], alpha=0.7)
+                ax.scatter(full_times[mask], resistance[mask], c=colors[lbl], s=2,
+                           label=lbl_names[lbl], alpha=0.7, zorder=2)
             ax.set_title(f'{study_name} — {title}')
             ax.set_ylabel('Resistance (Ω)')
             ax.grid(True, alpha=0.3)
@@ -647,24 +665,24 @@ def process_file(filepath: Path,
         plt.close()
         print(f"  Saved three-panel plot")
 
-        # Metrics
+        # Metrics (on labeled samples only)
         print(f"\n{study_name} metrics:")
-        print(f"DA  Acc: {accuracy_score(gt, da):.4f}  F1: {f1_score(gt, da, average='macro'):.4f} "
-              f"Prec: {precision_score(gt, da, average='macro'):.4f}  Rec: {recall_score(gt, da, average='macro'):.4f}")
-        print(f"ML  Acc: {accuracy_score(gt, interp_ml):.4f}  F1: {f1_score(gt, interp_ml, average='macro'):.4f} "
-              f"Prec: {precision_score(gt, interp_ml, average='macro'):.4f}  Rec: {recall_score(gt, interp_ml, average='macro'):.4f}")
-        print(f"Improvement: Acc {accuracy_score(gt, interp_ml)-accuracy_score(gt, da):+.4f}   "
-              f"F1 {f1_score(gt, interp_ml, average='macro')-f1_score(gt, da, average='macro'):+.4f}")
+        print(f"DA  Acc: {accuracy_score(gt_valid, da_valid):.4f}  F1: {f1_score(gt_valid, da_valid, average='macro'):.4f} "
+              f"Prec: {precision_score(gt_valid, da_valid, average='macro'):.4f}  Rec: {recall_score(gt_valid, da_valid, average='macro'):.4f}")
+        print(f"ML  Acc: {accuracy_score(gt_valid, ml_valid):.4f}  F1: {f1_score(gt_valid, ml_valid, average='macro'):.4f} "
+              f"Prec: {precision_score(gt_valid, ml_valid, average='macro'):.4f}  Rec: {recall_score(gt_valid, ml_valid, average='macro'):.4f}")
+        print(f"Improvement: Acc {accuracy_score(gt_valid, ml_valid)-accuracy_score(gt_valid, da_valid):+.4f}   "
+              f"F1 {f1_score(gt_valid, ml_valid, average='macro')-f1_score(gt_valid, da_valid, average='macro'):+.4f}")
 
         # Override analysis
-        override_mask = (interp_ml != da)
+        override_mask = (ml_valid != da_valid)
         n_overrides = override_mask.sum()
         if n_overrides > 0:
-            correct_overrides = ((interp_ml[override_mask] == gt[override_mask]).sum())
-            harmful_overrides = ((da[override_mask] == gt[override_mask]).sum())
+            correct_overrides = ((ml_valid[override_mask] == gt_valid[override_mask]).sum())
+            harmful_overrides = ((da_valid[override_mask] == gt_valid[override_mask]).sum())
             override_prec = correct_overrides / n_overrides
 
-            da_cw_errors = ((da != gt) & ((gt == 1) | (gt == 2))).sum()
+            da_cw_errors = ((da_valid != gt_valid) & ((gt_valid == 1) | (gt_valid == 2))).sum()
             override_rec = correct_overrides / da_cw_errors if da_cw_errors > 0 else 0.0
 
             print(f"\n  Override analysis ({study_name}):")
@@ -677,12 +695,12 @@ def process_file(filepath: Path,
             print(f"\n  No overrides in {study_name}")
 
         if gt_labels is not None and da_labels is not None:
-            all_gt_labels.extend(gt)
-            all_da_labels.extend(da)
-            all_ml_preds.extend(interp_ml)
+            all_gt_labels.extend(gt_valid)
+            all_da_labels.extend(da_valid)
+            all_ml_preds.extend(ml_valid)
 
-        overrides = np.where(interp_ml != da)[0]
-        all_override_times.extend(full_times[overrides])
+        overrides = np.where(ml_valid != da_valid)[0]
+        all_override_times.extend(full_times[valid][overrides])
 
     print(f"Finished {study_name}\n")
 
@@ -706,7 +724,8 @@ def main():
                      all_gt_labels=all_gt_labels,
                      all_da_labels=all_da_labels,
                      all_ml_preds=all_ml_preds,
-                     all_override_times=all_override_times)
+                     all_override_times=all_override_times,
+                     save_csv_parquet=SAVE_CSV_PARQUET)
 
     # ── Global summary ──
     if all_gt_labels:

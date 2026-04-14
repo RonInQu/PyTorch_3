@@ -1,0 +1,59 @@
+# split_test_files.py
+"""
+Select specific labeled_segment files and move them from training_data to test_data.
+"""
+
+from pathlib import Path
+import shutil
+
+# ================= CONFIG =================
+PROJECT_ROOT = Path(__file__).resolve().parents[1]   # adjust if needed
+
+TRAINING_DIR = PROJECT_ROOT / "training_data"
+TEST_DIR = PROJECT_ROOT / "test_data"
+
+# List of filenames you want to move to test (add or remove as needed)
+TEST_FILENAMES = [
+    "4E3747A0_labeled_segment.parquet",
+    "9C63125D_labeled_segment.parquet",
+    "33CFB812_labeled_segment.parquet",
+    "847A1E3F_labeled_segment.parquet",
+    "09419CF3_labeled_segment.parquet",
+    "16621B3E_labeled_segment.parquet",
+    "43140EA7_labeled_segment.parquet",
+    "530618CC_labeled_segment.parquet",
+    "819421BC_labeled_segment.parquet",
+    "A225B105_labeled_segment.parquet",
+    "AFF18ECE_labeled_segment.parquet",
+    "B9E8EB7F_labeled_segment.parquet",
+    "CENT0008_labeled_segment.parquet",
+    "HACK0140_labeled_segment.parquet",
+    "HUNT0120_labeled_segment.parquet",
+    "STCLD001_labeled_segment.parquet",
+    "SUMM0127_labeled_segment.parquet",
+    "UHMAX001_labeled_segment.parquet",
+]
+
+# Create test directory if it doesn't exist
+TEST_DIR.mkdir(parents=True, exist_ok=True)
+
+print(f"Moving {len(TEST_FILENAMES)} files from training_data to test_data...\n")
+
+moved_count = 0
+for filename in TEST_FILENAMES:
+    src_path = TRAINING_DIR / filename
+    dst_path = TEST_DIR / filename
+
+    if src_path.exists():
+        try:
+            shutil.move(str(src_path), str(dst_path))
+            print(f"✓ Moved: {filename}")
+            moved_count += 1
+        except Exception as e:
+            print(f"✗ Error moving {filename}: {e}")
+    else:
+        print(f"⚠ File not found in training_data: {filename}")
+
+print("\n" + "="*60)
+print(f"Done! {moved_count}/{len(TEST_FILENAMES)} files moved to test_data folder.")
+print(f"Test folder path: {TEST_DIR}")

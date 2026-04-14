@@ -1,3 +1,4 @@
+# #%%
 # train_gru_V6.py
 """
 Training script for clot detection — V6 (GRU on features).
@@ -163,6 +164,7 @@ def load_or_extract_features(force_extract: bool = False):
         for run_id, group in df_all.groupby('run_id'):
             resistance = group['magRLoadAdjusted'].to_numpy(dtype=np.float32)
             label_array = group['label'].values.astype(np.int64)
+            valid_mask = np.isin(label_array, [0, 1, 2])
 
             if len(resistance) < WINDOW_SAMPLES:
                 continue
@@ -182,6 +184,11 @@ def load_or_extract_features(force_extract: bool = False):
 
             for idx in extraction_indices:
                 win_start = idx - WINDOW_SAMPLES + 1
+
+                # Skip windows containing any unlabeled samples (matches scaler)
+                if not valid_mask[win_start : idx + 1].all():
+                    continue
+
                 window_data = resistance[win_start : idx + 1]
 
                 feats = _extractor.compute_features_from_array(
@@ -321,6 +328,17 @@ def main():
         print("Force re-extraction requested.")
 
     X_scaled, y, groups, scaler = load_or_extract_features(force_extract=force_extract)
+
+    # Drop unlabeled sequences (label == -1) from training
+    valid = (y != -1)
+    n_dropped = (~valid).sum()
+    if n_dropped > 0:
+        print(f"Dropping {n_dropped} unlabeled sequences (label == -1) "
+              f"out of {len(y)} total ({100*n_dropped/len(y):.1f}%)")
+        X_scaled = X_scaled[valid]
+        y = y[valid]
+        groups = groups[valid]
+
     class_weights = compute_final_class_weights(y)
 
     n_groups = len(np.unique(groups))
@@ -440,3 +458,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# %%
