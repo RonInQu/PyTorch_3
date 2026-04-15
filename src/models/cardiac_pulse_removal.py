@@ -34,8 +34,14 @@ TIME_COL = 'timeInMS'             # column name of the time (milliseconds)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
-TEST_DATA_DIR = PROJECT_ROOT / "test_data"
-OUTPUT_DIR = SCRIPT_DIR / "pulse_removal_results"
+
+# Look for test_data/ relative to project root first, then fall back to cwd
+_project_test = PROJECT_ROOT / "test_data"
+_local_test   = Path.cwd() / "test_data"
+TEST_DATA_DIR = _project_test if _project_test.is_dir() else _local_test
+
+# Output next to the input data
+OUTPUT_DIR = TEST_DATA_DIR.parent / "pulse_removal_results"
 
 
 # ════════════════════════════════════════════════
