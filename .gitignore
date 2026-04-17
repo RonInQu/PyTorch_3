@@ -40,6 +40,7 @@ src/models/*.json
 *.onnx.data
 *.json
 *.npz
+*.pptx
 
 # Editors
 .ipynb_checkpoints/

@@ -25,6 +25,7 @@ DN_MODEL_PATH  = EXPERIMENT_DIR / "models" / "clot_gru_denoised.pt"
 DN_SCALER_PATH = EXPERIMENT_DIR / "models" / "scaler_denoised.pkl"
 DN_TEST_DIR    = EXPERIMENT_DIR / "test_data"
 DN_RESULTS_DIR = EXPERIMENT_DIR / "results"
+BASELINE_TEST_DIR = PROJECT_ROOT / "test_data"
 
 # ── Patch module globals BEFORE any function uses them ──
 import src.models.gru_torch_V6 as _gru_mod
@@ -37,6 +38,7 @@ _gru_mod.OUTPUT_FOLDER = DN_RESULTS_DIR
 from src.models.gru_torch_V6 import process_file, SAVE_CSV_PARQUET
 
 import numpy as np
+import pandas as pd
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
 
@@ -65,13 +67,31 @@ def main():
     all_ml_preds       = []
     all_override_times = []
 
+    # Temp directory for patched parquets (baseline GT labels + denoised data)
+    tmp_dir = DN_RESULTS_DIR / "_tmp_patched"
+    tmp_dir.mkdir(exist_ok=True)
+
     for f in files:
-        process_file(f,
+        # Use baseline GT labels (denoised parquets have modified label column)
+        stem = f.stem.replace('_labeled_segment_denoised', '')
+        baseline_f = BASELINE_TEST_DIR / f"{stem}_labeled_segment.parquet"
+        df_dn = pd.read_parquet(f)
+        df_dn['label'] = pd.read_parquet(baseline_f, columns=['label'])['label'].values
+        patched = tmp_dir / f.name
+        df_dn.to_parquet(patched, index=False)
+
+        process_file(patched,
                      all_gt_labels=all_gt_labels,
                      all_da_labels=all_da_labels,
                      all_ml_preds=all_ml_preds,
                      all_override_times=all_override_times,
                      save_csv_parquet=True)
+        patched.unlink(missing_ok=True)
+
+    try:
+        tmp_dir.rmdir()
+    except OSError:
+        pass
 
     # ── Global summary ──
     if all_gt_labels:
