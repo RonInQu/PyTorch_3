@@ -7,25 +7,21 @@ from pathlib import Path
 import shutil
 
 # ================= CONFIG =================
-PROJECT_ROOT = Path(__file__).resolve().parents[1]   # adjust if needed
+BASE_DIR = Path(r"C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April6\event_files\processedResults")
 
-TRAINING_DIR = PROJECT_ROOT / "training_data"
-TEST_DIR = PROJECT_ROOT / "test_data"
+TRAINING_DIR = BASE_DIR / "training"
+TEST_DIR = BASE_DIR / "testing"
 
 # List of filenames you want to move to test (add or remove as needed)
 TEST_FILENAMES = [
-    "4E3747A0_labeled_segment.parquet",
-    "9C63125D_labeled_segment.parquet",
+    "00F628C9_labeled_segment.parquet",
     "33CFB812_labeled_segment.parquet",
-    "847A1E3F_labeled_segment.parquet",
-    "09419CF3_labeled_segment.parquet",
-    "16621B3E_labeled_segment.parquet",
     "43140EA7_labeled_segment.parquet",
+    "4E3747A0_labeled_segment.parquet",
     "530618CC_labeled_segment.parquet",
     "819421BC_labeled_segment.parquet",
     "A225B105_labeled_segment.parquet",
     "AFF18ECE_labeled_segment.parquet",
-    "B9E8EB7F_labeled_segment.parquet",
     "CENT0008_labeled_segment.parquet",
     "HACK0140_labeled_segment.parquet",
     "HUNT0120_labeled_segment.parquet",

@@ -11,7 +11,8 @@ import os
 import numpy as np
 
 # === USER CONFIGURATION ===
-input_folder = '.'  
+# input_folder = '.'  
+input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April6\event_files'
 NOISE_VALUE = 5
 
 output_base = os.path.join(input_folder, 'processedResults')
