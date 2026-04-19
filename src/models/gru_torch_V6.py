@@ -729,9 +729,11 @@ def main():
 
     # ── Global summary ──
     if all_gt_labels:
-        print("\n" + "="*70)
-        print("GLOBAL SUMMARY ACROSS ALL STUDIES")
-        print("="*70)
+        summary_lines = []
+
+        summary_lines.append("=" * 70)
+        summary_lines.append("GLOBAL SUMMARY ACROSS ALL STUDIES")
+        summary_lines.append("=" * 70)
 
         acc_da  = accuracy_score(all_gt_labels, all_da_labels)
         f1_da   = f1_score(all_gt_labels, all_da_labels, average='macro', zero_division=0)
@@ -743,13 +745,13 @@ def main():
         prec_ml = precision_score(all_gt_labels, all_ml_preds, average='macro', zero_division=0)
         rec_ml  = recall_score(all_gt_labels, all_ml_preds, average='macro', zero_division=0)
 
-        print(f"DA  Accuracy: {acc_da:.4f}    F1-macro: {f1_da:.4f}")
-        print(f"ML  Accuracy: {acc_ml:.4f}    F1-macro: {f1_ml:.4f}")
-        print(f"Improvement: Acc {acc_ml - acc_da:+.4f}   F1 {f1_ml - f1_da:+.4f}")
-        print("")
-        print(f"DA  Precision: {prec_da:.4f}    Recall: {rec_da:.4f}")
-        print(f"ML  Precision: {prec_ml:.4f}    Recall: {rec_ml:.4f}")
-        print(f"Improvement: Precision {prec_ml - prec_da:+.4f}   Recall {rec_ml - rec_da:+.4f}")
+        summary_lines.append(f"DA  Accuracy: {acc_da:.4f}    F1-macro: {f1_da:.4f}")
+        summary_lines.append(f"ML  Accuracy: {acc_ml:.4f}    F1-macro: {f1_ml:.4f}")
+        summary_lines.append(f"Improvement: Acc {acc_ml - acc_da:+.4f}   F1 {f1_ml - f1_da:+.4f}")
+        summary_lines.append("")
+        summary_lines.append(f"DA  Precision: {prec_da:.4f}    Recall: {rec_da:.4f}")
+        summary_lines.append(f"ML  Precision: {prec_ml:.4f}    Recall: {rec_ml:.4f}")
+        summary_lines.append(f"Improvement: Precision {prec_ml - prec_da:+.4f}   Recall {rec_ml - rec_da:+.4f}")
 
         gt_arr = np.array(all_gt_labels)
         da_arr = np.array(all_da_labels)
@@ -758,10 +760,10 @@ def main():
         g_override_mask = (ml_arr != da_arr)
         g_n_overrides = g_override_mask.sum()
 
-        print(f"\n{'─'*70}")
-        print(f"GLOBAL OVERRIDE ANALYSIS")
-        print(f"{'─'*70}")
-        print(f"Total overrides across all studies: {g_n_overrides}")
+        summary_lines.append(f"\n{'─'*70}")
+        summary_lines.append(f"GLOBAL OVERRIDE ANALYSIS")
+        summary_lines.append(f"{'─'*70}")
+        summary_lines.append(f"Total overrides across all studies: {g_n_overrides}")
 
         if g_n_overrides > 0:
             g_correct = (ml_arr[g_override_mask] == gt_arr[g_override_mask]).sum()
@@ -772,13 +774,21 @@ def main():
             g_da_cw_errors = ((da_arr != gt_arr) & ((gt_arr == 1) | (gt_arr == 2))).sum()
             g_override_rec = g_correct / g_da_cw_errors if g_da_cw_errors > 0 else 0.0
 
-            print(f"  Correct overrides (ML right, DA wrong): {g_correct}")
-            print(f"  Harmful overrides (DA right, ML wrong): {g_harmful}")
-            print(f"  Neither correct (both wrong differently): {g_neither}")
-            print(f"")
-            print(f"  Override Precision: {g_override_prec:.4f}  (target: >0.85)")
-            print(f"  Override Recall:    {g_override_rec:.4f}  (of {g_da_cw_errors} DA clot/wall errors)")
-            print(f"  Net benefit:        {g_correct - g_harmful:+d} samples")
+            summary_lines.append(f"  Correct overrides (ML right, DA wrong): {g_correct}")
+            summary_lines.append(f"  Harmful overrides (DA right, ML wrong): {g_harmful}")
+            summary_lines.append(f"  Neither correct (both wrong differently): {g_neither}")
+            summary_lines.append(f"")
+            summary_lines.append(f"  Override Precision: {g_override_prec:.4f}  (target: >0.85)")
+            summary_lines.append(f"  Override Recall:    {g_override_rec:.4f}  (of {g_da_cw_errors} DA clot/wall errors)")
+            summary_lines.append(f"  Net benefit:        {g_correct - g_harmful:+d} samples")
+
+        summary_text = "\n".join(summary_lines)
+        print("\n" + summary_text)
+
+        # Save summary to file for use by save_version.py
+        summary_path = OUTPUT_FOLDER / "global_summary.txt"
+        summary_path.write_text(summary_text, encoding="utf-8")
+        print(f"\nSaved global summary to {summary_path.name}")
 
     print("\nAll files processed.")
 

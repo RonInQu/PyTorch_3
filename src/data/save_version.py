@@ -40,6 +40,7 @@ def save_version(
     f1: float | None = None,
     tag: str | None = None,
     note: str | None = None,
+    global_summary: str | None = None,
 ) -> Path:
     """Snapshot the current model + scaler + split into versions/<timestamp>/."""
 
@@ -87,7 +88,7 @@ def save_version(
 
     # ── copy pipeline source scripts for reproducibility ──
     script_copies = [
-        PROJECT_ROOT / "src" / "data" / "LabelingMax_v5.py",
+        PROJECT_ROOT / "src" / "data" / "LabelingMax_v6.py",
         PROJECT_ROOT / "src" / "data" / "fit_scaler_V6.py",
         PROJECT_ROOT / "src" / "training" / "train_gru_V6.py",
         PROJECT_ROOT / "src" / "models" / "gru_torch_V6.py",
@@ -95,6 +96,13 @@ def save_version(
     for src_script in script_copies:
         if src_script.exists():
             shutil.copy2(src_script, version_dir / src_script.name)
+
+    # ── copy global summary from inference (if it exists) ──
+    summary_file = PROJECT_ROOT / "inference_deploy" / "Results" / "global_summary.txt"
+    if summary_file.exists():
+        shutil.copy2(summary_file, version_dir / "global_summary.txt")
+        if global_summary is None:
+            global_summary = summary_file.read_text(encoding="utf-8")
 
     # ── copy only the latest per-seed model (by modification time) ──
     seed_pattern = f"clot_gru_trained_seq{SEQ_LEN}_{FEATURE_SET}_seed*.pt"
@@ -165,6 +173,12 @@ def save_version(
     lines.extend(test_studies)
     lines.append("")
 
+    # ── Global summary from inference (if provided) ──
+    if global_summary:
+        lines.append("=== GLOBAL SUMMARY ===")
+        lines.append(global_summary.strip())
+        lines.append("")
+
     manifest = version_dir / "manifest.txt"
     manifest.write_text("\n".join(lines), encoding="utf-8")
 
@@ -192,6 +206,12 @@ if __name__ == "__main__":
     parser.add_argument("--tag",  type=str, default=None, help="Short label appended to folder name")
     parser.add_argument("--note", type=str, default=None, help="Free-text note for the manifest")
     parser.add_argument("--f1",   type=float, default=None, help="Best F1-macro to record")
+    parser.add_argument("--summary-file", type=str, default=None,
+                        help="Path to a text file containing the global inference summary")
     args = parser.parse_args()
 
-    save_version(f1=args.f1, tag=args.tag, note=args.note)
+    global_summary = None
+    if args.summary_file:
+        global_summary = Path(args.summary_file).read_text(encoding="utf-8")
+
+    save_version(f1=args.f1, tag=args.tag, note=args.note, global_summary=global_summary)
