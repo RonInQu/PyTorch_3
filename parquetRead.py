@@ -8,7 +8,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
-dfx2 = pd.read_parquet('_merged_rec_and_event_3E146478.parquet')
+
+dfx2 = pd.read_parquet('test2.parquet')
 
 plt.figure()
 # plt.plot(dfx2.timeInMS/1000, dfx2.label)

@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
-from scipy.signal import medfilt, find_peaks
+from scipy.signal import medfilt, find_peaks, butter, filtfilt
 
 
 # ════════════════════════════════════════════════
@@ -28,6 +28,8 @@ CARDIAC_WINDOW_SEC = 2.0    # Median filter window — covers 40-200 BPM
 SMOOTH_WINDOW_SEC = 0.3     # Post-median moving average
 BPM_WINDOW_SEC = 5.0        # Sliding window for BPM estimation
 BPM_STEP_SEC = 1.0          # Step between BPM estimates
+
+PULSE_LP_CUTOFF_HZ = 8.0    # Low-pass cutoff to isolate cardiac pulse band
 
 SIGNAL_COL = 'magRLoadAdjusted'   # column name of the resistance signal
 TIME_COL = 'timeInMS'             # column name of the time (milliseconds)
@@ -89,6 +91,30 @@ def remove_pulse(signal, sample_rate=SAMPLE_RATE,
     clean = clean.astype(np.float32)
     pulse = signal - clean
     return clean, pulse
+
+
+def remove_pulse_hires(signal, pulse, sample_rate=SAMPLE_RATE,
+                       cutoff_hz=PULSE_LP_CUTOFF_HZ):
+    """Remove cardiac pulse while preserving full 150 Hz bandwidth.
+
+    Low-pass filters the pulse component to isolate the cardiac band,
+    then subtracts only that from the raw signal.  High-frequency
+    content above the cutoff is preserved.
+
+    Args:
+        signal:      original 1-D float array
+        pulse:       pulse component from remove_pulse (raw - trend)
+        sample_rate: samples per second
+        cutoff_hz:   LP cutoff for cardiac isolation (default 8 Hz)
+
+    Returns:
+        clean_hires: pulse-subtracted signal at full sample rate
+    """
+    nyq = sample_rate / 2.0
+    b, a = butter(4, cutoff_hz / nyq, btype='low')
+    cardiac_only = filtfilt(b, a, pulse)
+    clean_hires = (signal - cardiac_only).astype(np.float32)
+    return clean_hires
 
 
 # ════════════════════════════════════════════════
@@ -181,6 +207,7 @@ def process_file(parquet_path, output_dir=OUTPUT_DIR):
 
     # ── Remove pulse ──
     clean, pulse = remove_pulse(resistance)
+    clean_hires = remove_pulse_hires(resistance, pulse)
 
     # ── Estimate BPM ──
     bpm_times, bpm_values = estimate_bpm(pulse, time_sec)
@@ -194,21 +221,29 @@ def process_file(parquet_path, output_dir=OUTPUT_DIR):
         mean_bpm = 0
         print(f"  No pulse detected")
 
-    # ── Save denoised parquet ──
+    # ── Save denoised parquets ──
+    # 5 Hz effective (heavily smoothed trend)
     df_out = df.copy()
     df_out[SIGNAL_COL] = clean
     out_parquet = output_dir / f"{study_name}_denoised.parquet"
     df_out.to_parquet(out_parquet, index=False)
-    print(f"  Saved: {out_parquet.name}")
+    print(f"  Saved: {out_parquet.name}  (5 Hz smoothed)")
+
+    # 150 Hz (cardiac pulse removed, high-freq preserved)
+    df_hires = df.copy()
+    df_hires[SIGNAL_COL] = clean_hires
+    out_hires = output_dir / f"{study_name}_denoised_150Hz.parquet"
+    df_hires.to_parquet(out_hires, index=False)
+    print(f"  Saved: {out_hires.name}  (150 Hz, pulse-only removal)")
 
     # ── Plot ──
-    fig, axes = plt.subplots(4, 1, figsize=(16, 12), sharex=True,
-                             gridspec_kw={'height_ratios': [2, 1.5, 2, 1]})
+    fig, axes = plt.subplots(5, 1, figsize=(16, 14), sharex=True,
+                             gridspec_kw={'height_ratios': [2, 1.5, 2, 2, 1]})
 
     # Panel 1: Raw + Clean overlay
     ax = axes[0]
     ax.plot(time_sec, resistance, color='gray', alpha=0.5, linewidth=0.5, label='Raw')
-    ax.plot(time_sec, clean, color='black', linewidth=1.2, label='Pulse-subtracted')
+    ax.plot(time_sec, clean, color='black', linewidth=1.2, label='5 Hz smoothed')
     ax.set_ylabel('Resistance (Ω)')
     ax.set_title(f'{study_name} — Raw vs Pulse-subtracted signal')
     ax.legend()
@@ -225,15 +260,22 @@ def process_file(parquet_path, output_dir=OUTPUT_DIR):
     ax.grid(True, alpha=0.3)
     ax.axhline(0, color='black', linewidth=0.5)
 
-    # Panel 3: Clean signal only
+    # Panel 3: 5 Hz smoothed clean signal
     ax = axes[2]
     ax.plot(time_sec, clean, color='black', linewidth=1.0)
     ax.set_ylabel('Resistance (Ω)')
-    ax.set_title(f'{study_name} — Pulse-subtracted signal')
+    ax.set_title(f'{study_name} — 5 Hz smoothed (trend only)')
     ax.grid(True, alpha=0.3)
 
-    # Panel 4: Heart rate — show 0 BPM in grayed no-pulse regions
+    # Panel 4: 150 Hz clean signal (pulse-only removal)
     ax = axes[3]
+    ax.plot(time_sec, clean_hires, color='steelblue', linewidth=0.7)
+    ax.set_ylabel('Resistance (Ω)')
+    ax.set_title(f'{study_name} — 150 Hz clean (cardiac pulse removed, high-freq preserved)')
+    ax.grid(True, alpha=0.3)
+
+    # Panel 5: Heart rate — show 0 BPM in grayed no-pulse regions
+    ax = axes[4]
     ax.plot(bpm_times, bpm_values, color='purple', linewidth=1.5,
             marker='.', markersize=3)
     # Gray shading where BPM = 0 (no pulse detected)
