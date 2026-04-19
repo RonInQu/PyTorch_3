@@ -95,7 +95,7 @@ for file_path in parquet_files:
         if event in blood_events: return 0
         if event in clot_events: return 1
         if event in wall_events: return 2
-        return 0   # unrecognized events (8,13,15,25) → blood, keep real R (baseline 04.07 behavior)
+        return -1  # unrecognized event — will be blanked to blood_median + noise
 
     # ===================================================================
     # 1. TRAINING: Keep real background. Blank ONLY da_label==0 outside highlights + outliers
@@ -111,8 +111,9 @@ for file_path in parquet_files:
 
     highlighted_mask = df_training[event_col].isin(highlighted_events)
     default_blank_mask = (df_training['da_label'] == 0) & (~highlighted_mask)
+    unrecognized_mask = (df_training['label'] == -1)
     outlier_mask = df_training[resistance_col] > 5000
-    blank_mask = default_blank_mask | outlier_mask
+    blank_mask = default_blank_mask | unrecognized_mask | outlier_mask
 
     if blank_mask.any():
         blood_median = df_training.loc[df_training[event_col].isin(blood_events), resistance_col].median()
@@ -145,8 +146,9 @@ for file_path in parquet_files:
 
         highlighted_mask = df_graphics[event_col].isin(highlighted_events)
         default_blank_mask = (df_graphics['da_label'] == 0) & (~highlighted_mask)
+        unrecognized_mask = ~highlighted_mask & (df_graphics['da_label'] != 0)
         outlier_mask = df_graphics[resistance_col] > 5000
-        blank_mask = default_blank_mask | outlier_mask
+        blank_mask = default_blank_mask | unrecognized_mask | outlier_mask
 
         if blank_mask.any():
             blood_median = df_graphics.loc[df_graphics[event_col].isin(blood_events), resistance_col].median()
@@ -198,8 +200,9 @@ for file_path in parquet_files:
 
     highlighted_mask = df_testing[event_col].isin(highlighted_events)
     default_non_highlight_mask = (df_testing['da_label'] == 0) & (~highlighted_mask)
+    unrecognized_mask = (df_testing['label'] == -1)
     outlier_mask = df_testing[resistance_col] > 5000
-    blank_mask = default_non_highlight_mask | outlier_mask
+    blank_mask = default_non_highlight_mask | unrecognized_mask | outlier_mask
 
     if blank_mask.any():
         blood_median = df_testing.loc[df_testing[event_col].isin(blood_events), resistance_col].median() or df_testing[resistance_col].median()

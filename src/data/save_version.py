@@ -46,6 +46,16 @@ def save_version(
     # ── lazy import so the module can be used without torch installed ──
     from src.models.gru_torch_V6 import (
         FEATURE_SET, SEQ_LEN, active_dim, dim_str,
+        WINDOW_SEC, REPORT_INTERVAL_MS, TEMPERATURE,
+        GRU_OVERRIDE_THRD_CLOT, GRU_OVERRIDE_THRD_WALL,
+        EMA_BLOOD_PRIOR_HISTORY, EMA_EXIT_TO_BLOOD_HISTORY,
+        EMA_SAME_CLASS_HISTORY, EMA_CROSS_CLASS_HISTORY,
+        DA_LABEL_CONFIDENCE,
+        INIT_BLOOD_PROB, INIT_CLOT_PROB, INIT_WALL_PROB,
+    )
+    from src.training.train_gru_V6 import (
+        SEEDS_TO_TRY, STRIDE_SAMPLES, BATCH_SIZE, N_EPOCHS,
+        PATIENCE, LR, WEIGHT_DECAY, CLINICAL_WEIGHTS,
     )
 
     # ── resolve source files ──
@@ -75,6 +85,17 @@ def save_version(
     shutil.copy2(model_path,  version_dir / model_path.name)
     shutil.copy2(scaler_path, version_dir / scaler_path.name)
 
+    # ── copy pipeline source scripts for reproducibility ──
+    script_copies = [
+        PROJECT_ROOT / "src" / "data" / "LabelingMax_v5.py",
+        PROJECT_ROOT / "src" / "data" / "fit_scaler_V6.py",
+        PROJECT_ROOT / "src" / "training" / "train_gru_V6.py",
+        PROJECT_ROOT / "src" / "models" / "gru_torch_V6.py",
+    ]
+    for src_script in script_copies:
+        if src_script.exists():
+            shutil.copy2(src_script, version_dir / src_script.name)
+
     # ── copy only the latest per-seed model (by modification time) ──
     seed_pattern = f"clot_gru_trained_seq{SEQ_LEN}_{FEATURE_SET}_seed*.pt"
     seed_files = sorted(
@@ -102,6 +123,41 @@ def save_version(
     lines.append(f"# Model: {model_path.name}")
     lines.append(f"# Scaler: {scaler_path.name}")
     lines.append("")
+
+    # ── Configuration settings ──
+    lines.append("=== LABELING CONFIG ===")
+    lines.append(f"Blood events: [6, 12]")
+    lines.append(f"Clot events:  [7, 11]")
+    lines.append(f"Wall events:  [23]")
+    lines.append(f"Noise value:  5")
+    lines.append(f"Blank mask:   (da_label==0) & (not highlighted) | (R>5000)")
+    lines.append("")
+
+    lines.append("=== TRAINING CONFIG ===")
+    lines.append(f"Seeds:          {SEEDS_TO_TRY}")
+    lines.append(f"Window sec:     {WINDOW_SEC}")
+    lines.append(f"Stride samples: {STRIDE_SAMPLES}")
+    lines.append(f"Batch size:     {BATCH_SIZE}")
+    lines.append(f"Epochs:         {N_EPOCHS}")
+    lines.append(f"Patience:       {PATIENCE}")
+    lines.append(f"Learning rate:  {LR}")
+    lines.append(f"Weight decay:   {WEIGHT_DECAY}")
+    lines.append(f"Class weights:  {CLINICAL_WEIGHTS}")
+    lines.append("")
+
+    lines.append("=== INFERENCE CONFIG ===")
+    lines.append(f"Temperature:           {TEMPERATURE}")
+    lines.append(f"GRU override clot:     {GRU_OVERRIDE_THRD_CLOT}")
+    lines.append(f"GRU override wall:     {GRU_OVERRIDE_THRD_WALL}")
+    lines.append(f"DA label confidence:   {DA_LABEL_CONFIDENCE}")
+    lines.append(f"EMA blood prior:       {EMA_BLOOD_PRIOR_HISTORY}")
+    lines.append(f"EMA exit to blood:     {EMA_EXIT_TO_BLOOD_HISTORY}")
+    lines.append(f"EMA same class:        {EMA_SAME_CLASS_HISTORY}")
+    lines.append(f"EMA cross class:       {EMA_CROSS_CLASS_HISTORY}")
+    lines.append(f"Init posterior:         [{INIT_BLOOD_PROB}, {INIT_CLOT_PROB}, {INIT_WALL_PROB}]")
+    lines.append(f"Report interval ms:    {REPORT_INTERVAL_MS}")
+    lines.append("")
+
     lines.append(f"=== TRAINING ({len(train_studies)}) ===")
     lines.extend(train_studies)
     lines.append("")
