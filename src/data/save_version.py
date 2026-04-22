@@ -88,7 +88,7 @@ def save_version(
 
     # ── copy pipeline source scripts for reproducibility ──
     script_copies = [
-        PROJECT_ROOT / "src" / "data" / "LabelingMax_v6.py",
+        PROJECT_ROOT / "src" / "data" / "Labeling_5Names_V6.py",
         PROJECT_ROOT / "src" / "data" / "fit_scaler_V6.py",
         PROJECT_ROOT / "src" / "training" / "train_gru_V6.py",
         PROJECT_ROOT / "src" / "models" / "gru_torch_V6.py",
@@ -97,12 +97,12 @@ def save_version(
         if src_script.exists():
             shutil.copy2(src_script, version_dir / src_script.name)
 
-    # ── copy global summary from inference (if it exists) ──
-    summary_file = PROJECT_ROOT / "inference_deploy" / "Results" / "global_summary.txt"
-    if summary_file.exists():
-        shutil.copy2(summary_file, version_dir / "global_summary.txt")
-        if global_summary is None:
-            global_summary = summary_file.read_text(encoding="utf-8")
+    # ── copy global summary ONLY if explicitly provided ──
+    # Do NOT auto-copy from inference_deploy/Results/ — it may be stale
+    # from a different run.  Pass --summary-file or global_summary param.
+    if global_summary is not None:
+        (version_dir / "global_summary.txt").write_text(
+            global_summary, encoding="utf-8")
 
     # ── copy only the latest per-seed model (by modification time) ──
     seed_pattern = f"clot_gru_trained_seq{SEQ_LEN}_{FEATURE_SET}_seed*.pt"
@@ -134,11 +134,12 @@ def save_version(
 
     # ── Configuration settings ──
     lines.append("=== LABELING CONFIG ===")
-    lines.append(f"Blood events: [6, 12]")
-    lines.append(f"Clot events:  [7, 11]")
-    lines.append(f"Wall events:  [23]")
-    lines.append(f"Noise value:  5")
-    lines.append(f"Blank mask:   (da_label==0) & (not highlighted) | (R>5000)")
+    lines.append(f"Blood events:    [6, 12]")
+    lines.append(f"Clot events:     [7, 11]")
+    lines.append(f"Wall events:     [23]")
+    lines.append(f"Artifact events: [8 (contrast), 15 (saline)] — always blanked")
+    lines.append(f"Noise value:     5")
+    lines.append(f"Blank mask:      (da_label==0 & not tissue) | (R>5000) | artifact")
     lines.append("")
 
     lines.append("=== TRAINING CONFIG ===")

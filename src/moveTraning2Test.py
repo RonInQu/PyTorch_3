@@ -8,7 +8,7 @@ import shutil
 
 # ================= CONFIG =================
 # BASE_DIR = Path(r"C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April6\event_files\processedResults")
-BASE_DIR = Path(r"C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April10\merged_expts_with_events\parquet\processedResults")
+BASE_DIR = Path(r"C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April10\merged_expts_with_events\event_files\processedResults")
 
 TRAINING_DIR = BASE_DIR / "training"
 TEST_DIR = BASE_DIR / "testing"
