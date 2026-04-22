@@ -2,9 +2,9 @@
 """
 Labeling_5Names_V6.py — 5-class aware labeling (blood, clot, wall, contrast, saline)
 
-Training/Testing: contrast (8) and saline (15) are ALWAYS blanked to blood_median+noise
-regardless of da_label.  Events 13 (OTHER) and 25 (UNKNOWN) keep baseline behavior
-(label=0, real R preserved).
+Training/Testing: ALL non-tissue events are blanked to blood_median+noise (label=0)
+regardless of da_label or R value.  Only blood (6,12), clot (7,11), and wall (23)
+keep their real resistance values.
 
 Graphics: all 5 event types shown with distinct colors; contrast spikes shown at full
 height (not clipped by the >5000 outlier mask).
@@ -13,14 +13,16 @@ Based on LabelingMax_v6.py (baseline 04.07 behavior preserved for blood/clot/wal
 """
 
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')  # non-interactive backend — no GUI windows
 import matplotlib.pyplot as plt
 import glob
 import os
 import numpy as np
 
 # === USER CONFIGURATION ===
-# input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April6\event_files'
-input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April10\merged_expts_with_events\event_files'
+input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April6\event_files'
+# input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April10\merged_expts_with_events\event_files'
 NOISE_VALUE = 5
 
 output_base = os.path.join(input_folder, 'processedResults')
@@ -118,7 +120,7 @@ for file_path in parquet_files:
         return 0   # unrecognized events (13,25,etc) → blood, keep real R (baseline behavior)
 
     # ===================================================================
-    # 1. TRAINING: Blank da_label==0 non-tissue + outliers + artifacts (always)
+    # 1. TRAINING: Blank ALL non-tissue events + outliers
     # ===================================================================
     df_training = df_cropped.copy()
 
@@ -130,15 +132,11 @@ for file_path in parquet_files:
     df_training['label'] = df_training[event_col].apply(assign_numeric_label)
 
     tissue_mask   = df_training[event_col].isin(tissue_events)
-    artifact_mask = df_training[event_col].isin(artifact_events)
-    default_blank_mask = (df_training['da_label'] == 0) & (~tissue_mask)
     outlier_mask  = df_training[resistance_col] > 5000
-    blank_mask    = default_blank_mask | outlier_mask | artifact_mask
+    blank_mask    = (~tissue_mask) | outlier_mask
 
-    n_artifact = artifact_mask.sum()
-    n_artifact_blanked = (artifact_mask & ~default_blank_mask & ~outlier_mask).sum()
-    if n_artifact > 0:
-        print(f"  Artifact events: {n_artifact} total ({n_artifact_blanked} additionally blanked by artifact rule)")
+    n_non_tissue = (~tissue_mask).sum()
+    print(f"  Non-tissue events blanked: {n_non_tissue} ({n_non_tissue/len(df_training)*100:.1f}%)")
 
     if blank_mask.any():
         blood_median = df_training.loc[df_training[event_col].isin(blood_events), resistance_col].median()
@@ -210,8 +208,41 @@ for file_path in parquet_files:
         plt.close()
         print(f"  Saved graphics (5-class view)")
 
+        # ── Training-view graphic: colored by label after blanking ──
+        # Shows exactly what the model sees during training
+        train_label_colors = {0: ('black', 'blood'), 1: ('red', 'clot'), 2: ('blue', 'wall')}
+
+        plt.figure(figsize=(14, 7))
+        time_ms = df_training_out['timeInMS'].values / 1000.0  # back to seconds for plotting
+        r_vals  = df_training_out['magRLoadAdjusted'].values
+        labels  = df_training_out['label'].values
+
+        plt.plot(time_ms, r_vals, 'k-', lw=0.8, alpha=0.3, zorder=1)
+
+        seen_labels = set()
+        for lbl, (color, name) in train_label_colors.items():
+            lmask = labels == lbl
+            if lmask.any():
+                plt.scatter(time_ms[lmask], r_vals[lmask],
+                            color=color, s=6,
+                            label=name if name not in seen_labels else None,
+                            zorder=5)
+                seen_labels.add(name)
+
+        plt.title(f"{study_name} — Training View (as seen by model)\n"
+                  f"After blanking: artifacts, outliers, da_label==0 non-tissue → blood")
+        plt.xlabel('Time (seconds)')
+        plt.ylabel('Resistance (Ω)')
+        plt.grid(True, alpha=0.3)
+        plt.legend(loc='upper right')
+
+        fig_path_train = os.path.join(graphics_folder, f'{study_name}_training_view.png')
+        plt.savefig(fig_path_train, dpi=250, bbox_inches='tight')
+        plt.close()
+        print(f"  Saved graphics (training view)")
+
     # ===================================================================
-    # 3. TESTING: Blank da_label==0 non-tissue + outliers + artifacts (always)
+    # 3. TESTING: Blank ALL non-tissue events + outliers
     # ===================================================================
     df_testing = df_cropped.copy()
     if 'curr_led_state' in df_testing.columns:
@@ -224,10 +255,8 @@ for file_path in parquet_files:
     df_testing['label'] = df_testing[event_col].apply(assign_numeric_label)
 
     tissue_mask   = df_testing[event_col].isin(tissue_events)
-    artifact_mask = df_testing[event_col].isin(artifact_events)
-    default_non_highlight_mask = (df_testing['da_label'] == 0) & (~tissue_mask)
     outlier_mask  = df_testing[resistance_col] > 5000
-    blank_mask    = default_non_highlight_mask | outlier_mask | artifact_mask
+    blank_mask    = (~tissue_mask) | outlier_mask
 
     if blank_mask.any():
         blood_median = df_testing.loc[df_testing[event_col].isin(blood_events), resistance_col].median() or df_testing[resistance_col].median()

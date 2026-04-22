@@ -139,7 +139,7 @@ def save_version(
     lines.append(f"Wall events:     [23]")
     lines.append(f"Artifact events: [8 (contrast), 15 (saline)] — always blanked")
     lines.append(f"Noise value:     5")
-    lines.append(f"Blank mask:      (da_label==0 & not tissue) | (R>5000) | artifact")
+    lines.append(f"Blank mask:      ~tissue | (R>5000)  [all non-tissue blanked]")
     lines.append("")
 
     lines.append("=== TRAINING CONFIG ===")

@@ -29,6 +29,8 @@ import torch.nn as nn
 from scipy import stats
 from scipy.signal import medfilt, find_peaks
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+import matplotlib
+matplotlib.use('Agg')  # non-interactive backend — no GUI windows
 import matplotlib.pyplot as plt
 
 warnings.filterwarnings("ignore")
