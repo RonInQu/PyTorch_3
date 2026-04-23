@@ -259,8 +259,8 @@ def train_fold(model, train_loader, val_loader, class_weights):
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
     # criterion = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE))
-    criterion = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE), 
-                                    label_smoothing=0.10)
+    criterion = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE), label_smoothing=0.1)
+
 
     best_f1 = 0
     best_state = None

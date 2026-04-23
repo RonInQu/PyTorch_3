@@ -260,7 +260,8 @@ def train_fold(model, train_loader, val_loader, class_weights):
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
     # criterion = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE))
     criterion = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE), 
-                                    label_smoothing=0.10)
+                                    label_smoothing=0.15)
+
 
     best_f1 = 0
     best_state = None
