@@ -7,7 +7,8 @@ Removes any files that are NOT in the approved test list.
 from pathlib import Path
 
 # ================= CONFIG =================
-BASE_DIR = Path(r"C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April6\event_files\processedResults")
+# BASE_DIR = Path(r"C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April6\event_files\processedResults")
+BASE_DIR = Path(r"C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April10\merged_expts_with_events\event_files\processedResults")
 TEST_DIR = BASE_DIR / "testing"
 
 # The 14 approved test studies (baseline split 2026-04-07)

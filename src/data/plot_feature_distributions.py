@@ -22,10 +22,10 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.models.gru_torch_V5 import ClotFeatureExtractor, WINDOW_SEC, \
+from src.models.gru_torch_V6 import ClotFeatureExtractor, WINDOW_SEC, \
     TOTAL_FEATURES, FEATURE_SET, SEQ_LEN, active_idx, active_dim
 
-from src.training.train_gru_V5 import STRIDE_SAMPLES
+from src.training.train_gru_V6 import STRIDE_SAMPLES
 
 # ── Feature descriptions (for plot titles) ──
 feature_descriptions = {
@@ -39,18 +39,18 @@ feature_descriptions = {
     22: "ema_fast", 23: "ema_slow", 24: "ema_fast-slow",
     25: "unused (0)", 26: "ema_fast/slow", 27: "abs(ema_fast-slow)",
     28: "std detrended 6s", 29: "std detrended 3s",
-    30: "mean abs detrended", 31: "std diff decim",
+    30: "mean abs detrended", 31: "unused (0)",
     32: "std recent diff", 33: "mean abs recent diff",
     34: "skew detrended", 35: "kurtosis detrended",
     36: "90th pctl-mean", 37: "IQR", 38: "95th-5th range",
     39: "frac above 95th",
-    40: "spectral centroid", 41: "spectral flatness",
-    42: "band power low/high", 43: "dominant freq",
-    44: "Hjorth mobility", 45: "Hjorth complexity",
-    46: "sample entropy", 47: "zero-crossing rate",
-    48: "variance ratio 1s/4s", 49: "CUSUM max",
-    50: "autocorr lag-1", 51: "energy ratio 1s/full",
-    52: "mean abs 2nd deriv",
+    40: "Hjorth mobility", 41: "Hjorth complexity",
+    42: "mean abs 2nd deriv",
+    43: "pulse amplitude", 44: "pulse-to-signal ratio",
+    45: "pulse rate",
+    46: "coeff of variation", 47: "plateau fraction",
+    48: "settling time ratio", 49: "trend stationarity (Q4/Q1)",
+    50: "R level rel baseline",
 }
 
 # ── Config ──

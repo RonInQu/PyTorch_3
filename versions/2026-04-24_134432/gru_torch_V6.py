@@ -50,10 +50,10 @@ WINDOW_SEC = 5.0
 REPORT_INTERVAL_MS = 200
 
 GRU_OVERRIDE_THRD_CLOT = 0.80
-GRU_OVERRIDE_THRD_WALL = 0.92
+GRU_OVERRIDE_THRD_WALL = 0.70
 
 # Temperature scaling for softmax (T>1 = less confident, T=1 = no change)
-TEMPERATURE = 1.5
+TEMPERATURE = 1.2
 
 # ── Posterior EMA (exponential moving average) blending weights ──
 # Controls how fast the smoothed posterior responds to new GRU outputs.
@@ -63,9 +63,9 @@ EMA_BLOOD_PRIOR_HISTORY = 0.78   # when prior state is blood: moderate reactivit
 EMA_BLOOD_PRIOR_NEW     = 1 - EMA_BLOOD_PRIOR_HISTORY
 EMA_EXIT_TO_BLOOD_HISTORY = 0.35 # leaving clot/wall back to blood: fast transition
 EMA_EXIT_TO_BLOOD_NEW     = 1 - EMA_EXIT_TO_BLOOD_HISTORY
-EMA_SAME_CLASS_HISTORY  = 0.96   # non-blood transitions: unified rate (no ratchet)
+EMA_SAME_CLASS_HISTORY  = 0.95   # non-blood transitions: unified rate (no ratchet)
 EMA_SAME_CLASS_NEW      = 1 - EMA_SAME_CLASS_HISTORY
-EMA_CROSS_CLASS_HISTORY = 0.99   # same as SAME_CLASS — eliminates asymmetric lock-in
+EMA_CROSS_CLASS_HISTORY = 0.95   # same as SAME_CLASS — eliminates asymmetric lock-in
 EMA_CROSS_CLASS_NEW     = 1 - EMA_CROSS_CLASS_HISTORY
 
 # ── DA (device-assisted) label override confidence ──

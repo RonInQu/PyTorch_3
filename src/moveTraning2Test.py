@@ -11,7 +11,7 @@ import shutil
 BASE_DIR = Path(r"C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April10\merged_expts_with_events\event_files\processedResults")
 
 TRAINING_DIR = BASE_DIR / "training"
-TEST_DIR = BASE_DIR / "testing"
+TEST_DIR = BASE_DIR / "testing_not_used"
 
 # List of filenames you want to move to test (add or remove as needed)
 TEST_FILENAMES = [
