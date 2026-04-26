@@ -2,7 +2,7 @@
 """
 Real-time clot detection — V6
 Stripped feature set: original 40 + Hjorth mobility, Hjorth complexity, mean abs 2nd derivative, flatness.
-Total features = 51.  No FFT, no sample entropy, no zero-crossing, no transition features.
+Total features = 57.  No FFT, no sample entropy, no zero-crossing, no transition features.
 
 Modular compute_features(): skips feature groups not needed by the selected FEATURE_SET.
 compute_features_from_array(): batch-mode method for scaler/training (no streaming state).
@@ -19,6 +19,7 @@ Feature index map (V6 vs V5):
   f48:     Settling time ratio  — how quickly signal settles after max; wall=fast, clot=slow
   f49:     Trend stationarity   — last-quarter / first-quarter mean ratio; wall≈1, clot≠1
   f50:     R level relative to baseline — (mean-800)/800; blood≈0, clot=moderate, wall=high
+  f51-f56: Short-timescale slopes (abs linear reg over 0.1s, 0.2s, ..., 0.6s of window end)
 """
 
 import os
@@ -50,7 +51,7 @@ WINDOW_SEC = 5.0
 REPORT_INTERVAL_MS = 200
 
 GRU_OVERRIDE_THRD_CLOT = 0.80
-GRU_OVERRIDE_THRD_WALL = 0.92
+GRU_OVERRIDE_THRD_WALL = 0.90
 
 # Temperature scaling for softmax (T>1 = less confident, T=1 = no change)
 TEMPERATURE = 1.5
@@ -63,7 +64,7 @@ EMA_BLOOD_PRIOR_HISTORY = 0.78   # when prior state is blood: moderate reactivit
 EMA_BLOOD_PRIOR_NEW     = 1 - EMA_BLOOD_PRIOR_HISTORY
 EMA_EXIT_TO_BLOOD_HISTORY = 0.35 # leaving clot/wall back to blood: fast transition
 EMA_EXIT_TO_BLOOD_NEW     = 1 - EMA_EXIT_TO_BLOOD_HISTORY
-EMA_SAME_CLASS_HISTORY  = 0.96   # non-blood transitions: unified rate (no ratchet)
+EMA_SAME_CLASS_HISTORY  = 0.97   # non-blood transitions: unified rate (no ratchet)
 EMA_SAME_CLASS_NEW      = 1 - EMA_SAME_CLASS_HISTORY
 EMA_CROSS_CLASS_HISTORY = 0.99   # same as SAME_CLASS — eliminates asymmetric lock-in
 EMA_CROSS_CLASS_NEW     = 1 - EMA_CROSS_CLASS_HISTORY
@@ -82,9 +83,9 @@ INIT_CLOT_PROB  = (1 - INIT_BLOOD_PROB) /2
 INIT_WALL_PROB  = (1 - INIT_BLOOD_PROB) /2
 
 # Feature set selection
-FEATURE_SET = "clot_wall_v2"
+FEATURE_SET = "clot_wall_v3"
 
-TOTAL_FEATURES = 51
+TOTAL_FEATURES = 57
 
 # Paths
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -110,6 +111,8 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent
 # f48:     Settling time ratio — post-peak settling speed; wall=fast, clot=slow
 # f49:     Trend stationarity — Q4/Q1 mean ratio; wall≈1.0, clot deviates
 # f50:     R level relative to baseline — (mean-800)/800; blood≈0, clot=mod, wall=high
+# f51-f56: Short-timescale slopes (abs linear regression over 0.1s, 0.2s, ..., 0.6s)
+#          Captures fast dynamics: clot=steep/variable, wall=flat/stable
 
 FEATURE_SETS = {
     "all":               list(range(TOTAL_FEATURES)),
@@ -124,6 +127,9 @@ FEATURE_SETS = {
     # New clot-vs-wall discriminative features (dynamic vs stable plateau)
     "clot_wall_v2":      [39, 21, 4, 19, 41, 9, 5, 23, 0, 34, 28, 29, 3, 38, 17, 32, 42, 27, 1, 20, 40,
                           46, 47, 48, 49, 50],
+    # v3: clot_wall_focused (21) + short-timescale slopes (6) — fast dynamics for clot/wall
+    "clot_wall_v3":      [39, 21, 4, 19, 41, 9, 5, 23, 0, 34, 28, 29, 3, 38, 17, 32, 42, 27, 1, 20, 40,
+                          51, 52, 53, 54, 55, 56],
 }
 
 # ────────────────────────────────────────────────
@@ -151,6 +157,7 @@ class ClotFeatureExtractor:
     _DERIV2      = {42}
     _PULSE       = {43, 44, 45}
     _CLOT_WALL   = {46, 47, 48, 49, 50}  # New clot-vs-wall discriminative features
+    _SHORT_SLOPES = {51, 52, 53, 54, 55, 56}  # Short-timescale slopes (0.1s-0.6s)
 
     def __init__(self, sample_rate=150, window_sec=5.0, active_features=None):
         self.fs = sample_rate
@@ -180,6 +187,7 @@ class ClotFeatureExtractor:
         self._need_deriv2      = bool(aset & self._DERIV2)
         self._need_pulse       = bool(aset & self._PULSE)
         self._need_clot_wall   = bool(aset & self._CLOT_WALL)
+        self._need_short_slopes = bool(aset & self._SHORT_SLOPES)
         # Shared dependency: first derivative needed by deriv, hjorth, or deriv2
         self._need_deriv_data  = self._need_deriv or self._need_hjorth or self._need_deriv2
 
@@ -382,6 +390,18 @@ class ClotFeatureExtractor:
             # f50: R level relative to baseline — (mean - 800) / 800.
             # Blood ≈ 0 (R ≈ 800), Clot = moderate positive, Wall = high positive.
             f[50] = (mean_val - 800.0) / 800.0
+
+        # ── f51-f56: Short-timescale slopes (0.1s through 0.6s) ──
+        # Linear regression over the LAST 0.1s, 0.2s, ..., 0.6s of the window.
+        # Captures fast transient dynamics: clot events have steep/variable slopes,
+        # wall events are flat/stable at these timescales.
+        if self._need_short_slopes:
+            for j, secs in enumerate([0.1, 0.2, 0.3, 0.4, 0.5, 0.6]):
+                ns = min(int(secs * self.fs), n)
+                if ns >= 2:
+                    segment = data[-ns:]
+                    slope = np.polyfit(np.arange(ns), segment, 1)[0]
+                    f[51 + j] = np.abs(slope) if np.isfinite(slope) else 0.0
 
         if self._active_features is not None:
             return f[self._active_features]
