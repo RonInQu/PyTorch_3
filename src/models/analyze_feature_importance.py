@@ -78,6 +78,12 @@ feature_descriptions = {
     48: "settling time ratio",
     49: "trend stationarity (Q4/Q1)",
     50: "R level relative to baseline",
+    51: "short slope 0.1s (15 samples)",
+    52: "short slope 0.2s (30 samples)",
+    53: "short slope 0.3s (45 samples)",
+    54: "short slope 0.4s (60 samples)",
+    55: "short slope 0.5s (75 samples)",
+    56: "short slope 0.6s (90 samples)",
 }
 
 # CONFIG

@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.models.gru_torch_V6 import ClotFeatureExtractor, WINDOW_SEC, \
-    TOTAL_FEATURES, FEATURE_SET, SEQ_LEN, active_idx, active_dim
+    FEATURE_SET, SEQ_LEN, active_idx, active_dim
 
 from src.training.train_gru_V6 import STRIDE_SAMPLES
 
@@ -51,6 +51,9 @@ feature_descriptions = {
     46: "coeff of variation", 47: "plateau fraction",
     48: "settling time ratio", 49: "trend stationarity (Q4/Q1)",
     50: "R level rel baseline",
+    51: "short slope 0.1s", 52: "short slope 0.2s",
+    53: "short slope 0.3s", 54: "short slope 0.4s",
+    55: "short slope 0.5s", 56: "short slope 0.6s",
 }
 
 # ── Config ──
@@ -220,11 +223,31 @@ for feat_idx in range(n_features):
 # Sort by per-run AUC (descending)
 separability.sort(reverse=True)
 
+summary_lines = []
+header = f"CLASS SEPARABILITY SUMMARY — ranked by mean per-run AUC(clot vs wall)"
+col_header = f"{'Rank':>4} {'Feature':>10} {'AUC c/w':>9} {'#runs':>6} {'global':>8} {'d(clt-wall)':>12} {'d(bld-clt)':>12} {'d(bld-wall)':>12} {'Description':<30}"
+summary_lines.append("=" * 110)
+summary_lines.append(header)
+summary_lines.append(f"Feature set: {FEATURE_SET} ({active_dim} active features)")
+summary_lines.append("=" * 110)
+summary_lines.append(col_header)
+summary_lines.append("-" * 110)
+
 for rank, (auc_cw, n_runs, auc_global, feat_idx, global_idx, d_bc, d_bw, d_cw) in enumerate(separability, 1):
     desc = feature_descriptions.get(global_idx, "")
-    print(f"{rank:4d}   f{global_idx:3d}      {auc_cw:7.4f}   {n_runs:4d}   {auc_global:7.4f}   {d_cw:10.3f}   {d_bc:10.3f}   {d_bw:10.3f}   {desc}")
+    line = f"{rank:4d}   f{global_idx:3d}      {auc_cw:7.4f}   {n_runs:4d}   {auc_global:7.4f}   {d_cw:10.3f}   {d_bc:10.3f}   {d_bw:10.3f}   {desc}"
+    summary_lines.append(line)
 
-print("\nAUC: per-run mean (within-run discriminability). 'global' = pooled across all runs.")
-print("AUC interpretation: 0.50=useless, 0.60=weak, 0.70=useful, 0.80=strong, 0.90+=excellent")
-print("Cohen's d interpretation: 0.2=small, 0.5=medium, 0.8=large, >1.2=very large")
+summary_lines.append("")
+summary_lines.append("AUC: per-run mean (within-run discriminability). 'global' = pooled across all runs.")
+summary_lines.append("AUC interpretation: 0.50=useless, 0.60=weak, 0.70=useful, 0.80=strong, 0.90+=excellent")
+summary_lines.append("Cohen's d interpretation: 0.2=small, 0.5=medium, 0.8=large, >1.2=very large")
+
+summary_text = "\n".join(summary_lines)
+print("\n" + summary_text)
+
+# Save to file
+output_txt = PROJECT_ROOT / "src" / "data" / f"class_separability_{FEATURE_SET}.txt"
+output_txt.write_text(summary_text, encoding="utf-8")
+print(f"\nSaved separability table to {output_txt.name}")
 print("Done!")
