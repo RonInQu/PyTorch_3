@@ -20,6 +20,7 @@ Feature index map (V6 vs V5):
   f49:     Trend stationarity   — last-quarter / first-quarter mean ratio; wall≈1, clot≠1
   f50:     R level relative to baseline — (mean-800)/800; blood≈0, clot=moderate, wall=high
   f51-f56: Short-timescale slopes (abs linear reg over 0.1s, 0.2s, ..., 0.6s of window end)
+  f57-f63: Rise-shape features (amplitude-normalized, invariant to R level)
 """
 
 import os
@@ -83,9 +84,9 @@ INIT_CLOT_PROB  = (1 - INIT_BLOOD_PROB) /2
 INIT_WALL_PROB  = (1 - INIT_BLOOD_PROB) /2
 
 # Feature set selection
-FEATURE_SET = "clot_wall_v5"
+FEATURE_SET = "clot_wall_v6"
 
-TOTAL_FEATURES = 57
+TOTAL_FEATURES = 64
 
 # Paths
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -113,6 +114,13 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent
 # f50:     R level relative to baseline — (mean-800)/800; blood≈0, clot=mod, wall=high
 # f51-f56: Short-timescale slopes (abs linear regression over 0.1s, 0.2s, ..., 0.6s)
 #          Captures fast dynamics: clot=steep/variable, wall=flat/stable
+# f57:     Normalized max rise rate — max(smoothed_deriv)/range; clot=high, wall=low
+# f58:     Rise time fraction — samples from 10% to 90% of range / window_len; clot=short, wall=long
+# f59:     Rise linearity — R² of linear fit during rise phase; wall=high(linear), clot=low(curved)
+# f60:     Peak sharpness — max |2nd deriv| near peak / range; clot=sharp, wall=round
+# f61:     Descent smoothness — std of deriv in post-peak region / range; wall=smooth, clot=noisy
+# f62:     Shape asymmetry — skewness of normalized signal; clot=right-skewed, wall=left-skewed
+# f63:     Plateau ratio — fraction of window within 10% of max; wall=high(sustained), clot=low(spike)
 
 FEATURE_SETS = {
     "all":               list(range(TOTAL_FEATURES)),
@@ -133,7 +141,16 @@ FEATURE_SETS = {
     "clot_wall_v4":      [39, 21, 4, 19, 41, 9, 5, 23, 0, 34, 28, 29, 3, 38, 17, 32, 42, 27, 1, 20, 40,
                            46, 47, 48, 49, 50,51, 52, 53, 54, 55, 56],
     "clot_wall_v5":      [39, 21, 4, 19, 41, 9, 5, 23, 34, 28, 29, 3, 38, 17, 32, 42, 27, 1, 20, 40,
-                           46, 47, 48, 49, 51, 52, 53, 54, 55, 56],                      
+                           46, 47, 48, 49, 51, 52, 53, 54, 55, 56],
+    # v6: clot_wall_focused (21) + rise-shape features (7) — amplitude-invariant morphology
+    "clot_wall_v6":      [39, 21, 4, 19, 41, 9, 5, 23, 0, 34, 28, 29, 3, 38, 17, 32, 42, 27, 1, 20, 40,
+                          57, 58, 59, 60, 61, 62, 63],
+    # v7: clot_wall_focused (21) + all new features (v2+v3+rise-shape = 18)
+    "clot_wall_v7":      [39, 21, 4, 19, 41, 9, 5, 23, 0, 34, 28, 29, 3, 38, 17, 32, 42, 27, 1, 20, 40,
+                          46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56,
+                          57, 58, 59, 60, 61, 62, 63],
+    # v8: rise-shape only (7) — purely morphological, no other features
+    "rise_shape_only":   [57, 58, 59, 60, 61, 62, 63],
 }
 
 # ────────────────────────────────────────────────
@@ -162,6 +179,7 @@ class ClotFeatureExtractor:
     _PULSE       = {43, 44, 45}
     _CLOT_WALL   = {46, 47, 48, 49, 50}  # New clot-vs-wall discriminative features
     _SHORT_SLOPES = {51, 52, 53, 54, 55, 56}  # Short-timescale slopes (0.1s-0.6s)
+    _RISE_SHAPE  = {57, 58, 59, 60, 61, 62, 63}  # Rise-shape features (R-level invariant)
 
     def __init__(self, sample_rate=150, window_sec=5.0, active_features=None):
         self.fs = sample_rate
@@ -192,6 +210,7 @@ class ClotFeatureExtractor:
         self._need_pulse       = bool(aset & self._PULSE)
         self._need_clot_wall   = bool(aset & self._CLOT_WALL)
         self._need_short_slopes = bool(aset & self._SHORT_SLOPES)
+        self._need_rise_shape  = bool(aset & self._RISE_SHAPE)
         # Shared dependency: first derivative needed by deriv, hjorth, or deriv2
         self._need_deriv_data  = self._need_deriv or self._need_hjorth or self._need_deriv2
 
@@ -406,6 +425,101 @@ class ClotFeatureExtractor:
                     segment = data[-ns:]
                     slope = np.polyfit(np.arange(ns), segment, 1)[0]
                     f[51 + j] = np.abs(slope) if np.isfinite(slope) else 0.0
+
+        # ── f57-f63: Rise-shape features (amplitude-normalized) ──
+        # All features are normalized by the window's R range, making them
+        # invariant to absolute R level.  They capture the SHAPE of the signal:
+        # clot = sharp/fast rise, spiky peak, noisy descent
+        # wall = gradual/smooth rise, rounded peak, smooth sustained curve
+        if self._need_rise_shape:
+            r_range = np.ptp(data)
+            if r_range > 5.0 and n >= 50:  # meaningful signal, not flat noise
+                # Amplitude-normalize to [0, 1]
+                d_norm = (data - data.min()) / r_range
+
+                # Smoothed first derivative (15-sample ~ 0.1s moving average)
+                kern = min(15, n // 10)
+                if kern >= 3:
+                    smooth = np.convolve(data, np.ones(kern)/kern, 'valid')
+                    smooth_deriv = np.diff(smooth)
+                else:
+                    smooth_deriv = np.diff(data)
+
+                # f57: Normalized max rise rate
+                # Max positive slope / R range.  Clot = high (sharp rise), wall = low.
+                if len(smooth_deriv) > 0:
+                    f[57] = np.max(smooth_deriv) / r_range
+                else:
+                    f[57] = 0.0
+
+                # f58: Rise time fraction
+                # Samples from first crossing of 10% to first crossing of 90% of range,
+                # divided by window length.  Clot = short fraction, wall = long.
+                lo_thresh = 0.10
+                hi_thresh = 0.90
+                cross_lo = np.where(d_norm >= lo_thresh)[0]
+                cross_hi = np.where(d_norm >= hi_thresh)[0]
+                if len(cross_lo) > 0 and len(cross_hi) > 0:
+                    rise_samples = cross_hi[0] - cross_lo[0]
+                    f[58] = max(rise_samples, 0) / n
+                else:
+                    f[58] = 0.0
+
+                # f59: Rise linearity (R² of linear fit during rise phase)
+                # Wall rises more linearly; clot has curved/exponential rise.
+                if len(cross_lo) > 0 and len(cross_hi) > 0:
+                    rise_start = cross_lo[0]
+                    rise_end = cross_hi[0]
+                    rise_seg = data[rise_start:rise_end + 1]
+                    if len(rise_seg) >= 5:
+                        x_rise = np.arange(len(rise_seg))
+                        coeffs = np.polyfit(x_rise, rise_seg, 1)
+                        fitted = np.polyval(coeffs, x_rise)
+                        ss_res = np.sum((rise_seg - fitted) ** 2)
+                        ss_tot = np.sum((rise_seg - rise_seg.mean()) ** 2) + 1e-8
+                        f[59] = max(0.0, 1.0 - ss_res / ss_tot)
+                    else:
+                        f[59] = 0.0
+                else:
+                    f[59] = 0.0
+
+                # f60: Peak sharpness
+                # Max |2nd derivative| in a neighborhood around the peak, / R range.
+                # Clot = sharp peak (high), wall = rounded (low).
+                peak_idx = np.argmax(data)
+                hood = max(15, n // 20)  # ~0.1s neighborhood
+                p_lo = max(0, peak_idx - hood)
+                p_hi = min(n, peak_idx + hood)
+                seg_peak = data[p_lo:p_hi]
+                if len(seg_peak) >= 4:
+                    d2_peak = np.diff(seg_peak, n=2)
+                    f[60] = np.max(np.abs(d2_peak)) / r_range
+                else:
+                    f[60] = 0.0
+
+                # f61: Descent smoothness
+                # Std of first derivative in post-peak half, / R range.
+                # Wall = smooth descent (low std), clot = noisy (high std).
+                post = data[peak_idx:]
+                if len(post) >= 10:
+                    post_deriv = np.diff(post)
+                    f[61] = np.std(post_deriv) / r_range
+                else:
+                    f[61] = 0.0
+
+                # f62: Shape asymmetry (skewness of normalized signal)
+                # Clot: sharp rise + slow fall → right-skewed (positive).
+                # Wall: gradual rise + sharp drop → left-skewed (negative).
+                f[62] = float(stats.skew(d_norm)) if n >= 8 else 0.0
+
+                # f63: Plateau ratio
+                # Fraction of window within top 10% of range.
+                # Wall = high (sustained near max), clot = low (sharp spike).
+                f[63] = np.sum(d_norm >= 0.90) / n
+
+            else:
+                # Flat/low-range signal — set all to 0
+                f[57] = f[58] = f[59] = f[60] = f[61] = f[62] = f[63] = 0.0
 
         if self._active_features is not None:
             return f[self._active_features]

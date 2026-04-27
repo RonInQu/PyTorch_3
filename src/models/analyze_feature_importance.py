@@ -84,6 +84,13 @@ feature_descriptions = {
     54: "short slope 0.4s (60 samples)",
     55: "short slope 0.5s (75 samples)",
     56: "short slope 0.6s (90 samples)",
+    57: "norm max rise rate",
+    58: "rise time fraction",
+    59: "rise linearity (R²)",
+    60: "peak sharpness",
+    61: "descent smoothness",
+    62: "shape asymmetry (skew)",
+    63: "plateau ratio",
 }
 
 # CONFIG
