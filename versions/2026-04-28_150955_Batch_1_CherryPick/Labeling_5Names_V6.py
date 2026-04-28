@@ -6,8 +6,8 @@ Training: ALL non-tissue events are blanked to blood_median+noise (label=0)
 regardless of da_label or R value.  Only blood (6,12), clot (7,11), and wall (23)
 keep their real resistance values.
 
-Testing: ALL data kept including artifacts. R>5000 clipped to 5000 (not blanked).
-Labels: blood/non-tissue=0, clot=1, wall=2.
+Testing: ALL data kept including artifacts (contrast, saline, outliers).
+Real R values preserved so inference sees realistic signals.
 
 Graphics: all 5 event types shown with distinct colors; contrast spikes shown at full
 height (not clipped by the >5000 outlier mask).
@@ -26,6 +26,8 @@ import numpy as np
 # === USER CONFIGURATION ===
 # input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April6\event_files'
 input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April10\merged_expts_with_events\event_files'
+input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\ReAnalyisOfExpts\New_baseline93_analysis'
+
 NOISE_VALUE = 5
 
 output_base = os.path.join(input_folder, 'processedResults')
@@ -245,9 +247,9 @@ for file_path in parquet_files:
         print(f"  Saved graphics (training view)")
 
     # ===================================================================
-    # 3. TESTING: Keep ALL data with real R values, clip R>5000 to 5000
-    #    No blanking to blood median — just cap outlier spikes at 5000.
-    #    Matches the 5-class graphics view.
+    # 3. TESTING: Keep ALL data (including artifacts) with real R values
+    #    No blanking — inference needs the full signal to evaluate on
+    #    realistic data including contrast spikes, saline, etc.
     # ===================================================================
     df_testing = df_cropped.copy()
     if 'curr_led_state' in df_testing.columns:
@@ -259,14 +261,12 @@ for file_path in parquet_files:
 
     df_testing['label'] = df_testing[event_col].apply(assign_numeric_label)
 
-    # Clip R>5000 to 5000 (not blanked, just capped)
-    n_outlier = (df_testing[resistance_col] > 5000).sum()
-    df_testing[resistance_col] = df_testing[resistance_col].clip(upper=5000)
-
+    # Count non-tissue events (for info only — NOT blanked in test files)
     tissue_mask = df_testing[event_col].isin(tissue_events)
     n_non_tissue = (~tissue_mask).sum()
+    n_outlier = (df_testing[resistance_col] > 5000).sum()
     print(f"  Test: {n_non_tissue} non-tissue events KEPT ({n_non_tissue/len(df_testing)*100:.1f}%), "
-          f"{n_outlier} outliers clipped to 5000")
+          f"{n_outlier} outliers (R>5000) KEPT")
 
     df_testing_out = pd.DataFrame({
         'timeInMS': (df_testing[time_col] * 1000).astype(int),
@@ -277,6 +277,6 @@ for file_path in parquet_files:
 
     testing_out_path = os.path.join(testing_folder, f'{study_name}_labeled_segment.parquet')
     df_testing_out.to_parquet(testing_out_path, index=True)
-    print(f"  Saved testing (all data kept, R>5000 clipped to 5000)")
+    print(f"  Saved testing (ALL data kept, including artifacts)")
 
-print("\nAll files processed! Training: non-tissue blanked. Testing: all data kept, R>5000 clipped to 5000.")
+print("\nAll files processed! Training: non-tissue blanked. Testing: ALL data kept (artifacts included).")
