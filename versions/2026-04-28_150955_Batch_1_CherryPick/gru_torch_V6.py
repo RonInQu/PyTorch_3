@@ -51,11 +51,11 @@ SEQ_LEN = 8
 WINDOW_SEC = 5.0
 REPORT_INTERVAL_MS = 200
 
-GRU_OVERRIDE_THRD_CLOT = 0.82
+GRU_OVERRIDE_THRD_CLOT = 0.80
 GRU_OVERRIDE_THRD_WALL = 0.92
 
 # Temperature scaling for softmax (T>1 = less confident, T=1 = no change)
-TEMPERATURE = 1.8
+TEMPERATURE = 1.5
 
 # ── Posterior EMA (exponential moving average) blending weights ──
 # Controls how fast the smoothed posterior responds to new GRU outputs.
