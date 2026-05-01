@@ -27,9 +27,7 @@ import numpy as np
 # input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April6\event_files'
 # input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_April10\merged_expts_with_events\event_files'
 # input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\ReAnalyisOfExpts\New_baseline93_analysis'
-# input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_v94\event_files'
-# input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\ReAnalyisOfExpts\New_April6'
-input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\ReAnalyisOfExpts\New_April10'
+input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_v94\event_files'
 
 NOISE_VALUE = 5
 
