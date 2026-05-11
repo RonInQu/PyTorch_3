@@ -46,7 +46,7 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 # ────────────────────────────────────────────────
 # CONFIG — Single source of truth
 # ────────────────────────────────────────────────
-SEQ_LEN = 8
+SEQ_LEN = 16
 
 WINDOW_SEC = 5.0
 REPORT_INTERVAL_MS = 200
@@ -547,7 +547,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ClotGRU Model
 # ────────────────────────────────────────────────
 class ClotGRU(nn.Module):
-    def __init__(self, input_size=None, hidden_size=64, output_size=3):
+    def __init__(self, input_size=None, hidden_size=32, output_size=3):
         super().__init__()
         if input_size is None:
             input_size = active_dim
@@ -559,8 +559,8 @@ class ClotGRU(nn.Module):
         nn.init.zeros_(self.gru.bias_ih_l0)
         nn.init.zeros_(self.gru.bias_hh_l0)
 
-        self.fc1 = nn.Linear(hidden_size, 16)
-        self.fc2 = nn.Linear(16, output_size)
+        self.fc1 = nn.Linear(hidden_size, 24)
+        self.fc2 = nn.Linear(24, output_size)
 
         nn.init.kaiming_uniform_(self.fc1.weight, nonlinearity='relu')
         nn.init.zeros_(self.fc1.bias)
