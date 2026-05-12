@@ -1,6 +1,10 @@
 # train_infer_xgboost.py
 """
-XGBoost classifier with Wavelet Scattering features.
+XGBoost classifier with HYBRID features:
+  - 21 hand-crafted features (from ClotFeatureExtractor, clot_wall_focused set)
+  - 126 wavelet scattering features (J=6, Q=8)
+  = 147 total features per window
+
 Self-contained: trains on training_data/, evaluates on test_data/.
 
 Key differences from GRU approach:
@@ -10,7 +14,7 @@ Key differences from GRU approach:
 - SHAP-ready for interpretability
 
 Pipeline:
-  1. Extract scattering features from all windows (train + test)
+  1. Extract hybrid features from all windows (train + test)
   2. Train XGBoost with GroupKFold cross-validation
   3. Run inference on test set with EMA temporal smoothing
   4. Compare to DA, produce plots and metrics
@@ -41,6 +45,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from experiments.scattering.scattering_features import (
     extract_scattering_features, SCATTERING_DIM, WINDOW_SAMPLES, WINDOW_SEC, SAMPLE_RATE
 )
+from src.models.gru_torch_V6 import ClotFeatureExtractor, active_idx, active_dim
+from scipy.signal import lfilter
+
+HYBRID_DIM = active_dim + SCATTERING_DIM  # 21 + 126 = 147
 
 # ────────────────────────────────────────────────
 # CONFIG
@@ -50,6 +58,9 @@ REPORT_INTERVAL_MS = 200
 
 # EMA smoothing for temporal coherence (applied to XGBoost predictions)
 EMA_ALPHA = 0.3  # weight on new prediction (higher = more reactive)
+
+# Temperature scaling: T>1 softens probabilities, T=1 no change, T<1 sharpens
+TEMPERATURE = 1.5
 
 # DA override settings (same as GRU pipeline)
 DA_LABEL_CONFIDENCE = 0.92
@@ -69,12 +80,26 @@ for d in [MODEL_DIR, CACHE_DIR, OUTPUT_FOLDER]:
 CLASS_NAMES = ['blood', 'clot', 'wall']
 
 
+def apply_temperature(probs, T=TEMPERATURE):
+    """Apply temperature scaling to soften/sharpen probabilities.
+    Converts probs → log-space, divides by T, then softmax back.
+    T=1: no change. T>1: softer (less extreme). T<1: sharper.
+    """
+    if T == 1.0:
+        return probs
+    log_probs = np.log(np.clip(probs, 1e-8, 1.0))
+    scaled = log_probs / T
+    scaled -= scaled.max()  # numerical stability
+    exp_scaled = np.exp(scaled)
+    return (exp_scaled / exp_scaled.sum()).astype(np.float32)
+
+
 # ────────────────────────────────────────────────
 # Feature extraction
 # ────────────────────────────────────────────────
 def extract_dataset_features(data_dir, cache_name):
-    """Extract scattering features from all parquets in a directory."""
-    cache_file = CACHE_DIR / f"{cache_name}_scattering_features.npz"
+    """Extract hybrid features (hand-crafted + scattering) from all parquets."""
+    cache_file = CACHE_DIR / f"{cache_name}_hybrid_features.npz"
 
     if cache_file.exists():
         print(f"  Loading cached features: {cache_file.name}")
@@ -85,6 +110,16 @@ def extract_dataset_features(data_dir, cache_name):
     if not parquet_files:
         print(f"  No parquet files in {data_dir}")
         sys.exit(1)
+
+    # Hand-crafted feature extractor + EMA filter coefficients
+    hc_extractor = ClotFeatureExtractor(sample_rate=SAMPLE_RATE, window_sec=WINDOW_SEC,
+                                        active_features=active_idx)
+    alpha_fast = hc_extractor.alpha_fast
+    alpha_slow = hc_extractor.alpha_slow
+    B_FAST = np.array([alpha_fast])
+    A_FAST = np.array([1.0, -(1.0 - alpha_fast)])
+    B_SLOW = np.array([alpha_slow])
+    A_SLOW = np.array([1.0, -(1.0 - alpha_slow)])
 
     all_features = []
     all_labels = []
@@ -107,6 +142,13 @@ def extract_dataset_features(data_dir, cache_name):
         if len(resistance) < WINDOW_SAMPLES:
             continue
 
+        # Precompute full-run EMA arrays for hand-crafted features
+        r0 = float(resistance[0])
+        ema_f_all, _ = lfilter(B_FAST, A_FAST, resistance.astype(np.float64),
+                               zi=[r0 * (1.0 - alpha_fast)])
+        ema_s_all, _ = lfilter(B_SLOW, A_SLOW, resistance.astype(np.float64),
+                               zi=[r0 * (1.0 - alpha_slow)])
+
         n_windows = 0
         for start in range(0, len(resistance) - WINDOW_SAMPLES + 1, STRIDE_SAMPLES):
             end = start + WINDOW_SAMPLES
@@ -114,15 +156,28 @@ def extract_dataset_features(data_dir, cache_name):
                 continue
 
             window = resistance[start:end]
-            feats = extract_scattering_features(window)
-            if feats is not None and len(feats) == SCATTERING_DIM:
-                window_label = int(labels[start:end].max())
-                all_features.append(feats)
-                all_labels.append(window_label)
-                all_groups.append(study_name)
-                all_times.append(times[end - 1])  # time of window end
-                all_studies.append(study_name)
-                n_windows += 1
+
+            # Scattering features (126)
+            scat_feats = extract_scattering_features(window)
+            if scat_feats is None or len(scat_feats) != SCATTERING_DIM:
+                continue
+
+            # Hand-crafted features (21)
+            hc_feats = hc_extractor.compute_features_from_array(
+                window, float(ema_f_all[end - 1]), float(ema_s_all[end - 1]))
+            if hc_feats is None or len(hc_feats) != active_dim:
+                continue
+
+            # Concatenate: [21 hand-crafted | 126 scattering]
+            hybrid = np.concatenate([hc_feats, scat_feats])
+
+            window_label = int(labels[start:end].max())
+            all_features.append(hybrid)
+            all_labels.append(window_label)
+            all_groups.append(study_name)
+            all_times.append(times[end - 1])
+            all_studies.append(study_name)
+            n_windows += 1
 
         print(f"  {study_name}: {n_windows} windows")
 
@@ -197,7 +252,7 @@ def train_xgboost(X, y, groups):
     final_model = xgb.XGBClassifier(**params)
     final_model.fit(X, y, sample_weight=sample_weights, verbose=False)
 
-    model_path = MODEL_DIR / "scattering_xgboost.json"
+    model_path = MODEL_DIR / "hybrid_xgboost.json"
     final_model.save_model(str(model_path))
     print(f"  Model saved → {model_path}")
 
@@ -216,6 +271,21 @@ def infer_study(model, filepath):
     time_ms = df['timeInMS'].to_numpy(dtype=np.float64)
     gt_labels = df['label'].to_numpy(dtype=np.int64) if 'label' in df.columns else None
     da_labels = df['da_label'].to_numpy(dtype=np.int64) if 'da_label' in df.columns else None
+
+    # Hand-crafted feature extractor + precompute EMA
+    hc_extractor = ClotFeatureExtractor(sample_rate=SAMPLE_RATE, window_sec=WINDOW_SEC,
+                                        active_features=active_idx)
+    alpha_fast = hc_extractor.alpha_fast
+    alpha_slow = hc_extractor.alpha_slow
+    r0 = float(resistance[0])
+    ema_f_all, _ = lfilter(np.array([alpha_fast]),
+                           np.array([1.0, -(1.0 - alpha_fast)]),
+                           resistance.astype(np.float64),
+                           zi=[r0 * (1.0 - alpha_fast)])
+    ema_s_all, _ = lfilter(np.array([alpha_slow]),
+                           np.array([1.0, -(1.0 - alpha_slow)]),
+                           resistance.astype(np.float64),
+                           zi=[r0 * (1.0 - alpha_slow)])
 
     # Extract features at report intervals
     results = []
@@ -237,13 +307,25 @@ def infer_study(model, filepath):
         win_start = i - WINDOW_SAMPLES + 1
         window = resistance[win_start:i+1]
 
-        # Scattering features
-        feats = extract_scattering_features(window)
-        if feats is None:
+        # Scattering features (126)
+        scat_feats = extract_scattering_features(window)
+        if scat_feats is None:
             continue
 
+        # Hand-crafted features (21)
+        hc_feats = hc_extractor.compute_features_from_array(
+            window, float(ema_f_all[i]), float(ema_s_all[i]))
+        if hc_feats is None or len(hc_feats) != active_dim:
+            continue
+
+        # Concatenate: [21 hand-crafted | 126 scattering]
+        hybrid = np.concatenate([hc_feats, scat_feats])
+
         # XGBoost prediction (probability)
-        probs = model.predict_proba(feats.reshape(1, -1))[0]
+        probs = model.predict_proba(hybrid.reshape(1, -1))[0]
+
+        # Temperature scaling to soften extreme probabilities
+        probs = apply_temperature(probs)
 
         # DA override logic
         da_now = int(da_labels[i]) if da_labels is not None else None
@@ -292,8 +374,9 @@ def plot_and_score(study_name, results_df, gt_labels, da_labels, time_ms, resist
                    all_gt, all_da, all_ml):
     """Generate plots and compute metrics for one study."""
     colors = {0: 'black', 1: 'red', 2: 'blue'}
+    lbl_names = {0: 'blood', 1: 'clot', 2: 'wall'}
 
-    # Probability plot
+    # ── Plot 1: Probability traces ──
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 14), sharex=True)
 
     for lbl, name in [(0, 'blood'), (1, 'clot'), (2, 'wall')]:
@@ -301,7 +384,7 @@ def plot_and_score(study_name, results_df, gt_labels, da_labels, time_ms, resist
         ax1.scatter(results_df['time'][mask], results_df['resistance'][mask],
                     c=colors[lbl], s=4, label=name, alpha=0.8)
     ax1.set_ylabel('Resistance (Ω)')
-    ax1.set_title(f'{study_name} — XGBoost + Scattering Predictions')
+    ax1.set_title(f'{study_name} — XGBoost + Hybrid Predictions')
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
@@ -326,7 +409,7 @@ def plot_and_score(study_name, results_df, gt_labels, da_labels, time_ms, resist
     plt.savefig(OUTPUT_FOLDER / f"{study_name}_xgboost_probs.png", dpi=250, bbox_inches='tight')
     plt.close()
 
-    # Metrics
+    # Metrics + three-panel plot
     if gt_labels is not None and da_labels is not None:
         full_times = time_ms / 1000.0
         interp_ml = np.interp(full_times, results_df['time'], results_df['prediction'])
@@ -352,17 +435,78 @@ def plot_and_score(study_name, results_df, gt_labels, da_labels, time_ms, resist
             harmful = (da_v[override_mask] == gt_v[override_mask]).sum()
             print(f"    Overrides: {n_ov}, correct={correct}, harmful={harmful}, net={correct-harmful:+d}")
 
+        # ── Plot 2: Three-panel ML / DA / GT ──
+        fig2, axes = plt.subplots(3, 1, figsize=(14, 13), sharex=True, sharey=True,
+                                  gridspec_kw={'height_ratios': [1, 1, 1]})
+
+        # Top: ML predictions with override highlights
+        ax = axes[0]
+        for lbl in [0, 1, 2]:
+            mask = results_df['prediction'] == lbl
+            ax.scatter(results_df['time'][mask], results_df['resistance'][mask],
+                       c=colors[lbl], s=5, label=lbl_names[lbl], alpha=0.85)
+
+        # Highlight override regions (ML ≠ DA)
+        ml_da_interp = np.interp(results_df['time'], full_times, da_labels)
+        ml_da_interp = np.round(ml_da_interp).astype(int)
+        diff = (results_df['prediction'].values != ml_da_interp)
+        diff_diff = np.diff(diff.astype(int))
+        starts = np.where(diff_diff == 1)[0] + 1
+        ends = np.where(diff_diff == -1)[0] + 1
+        if diff.size > 0 and diff[0]:
+            starts = np.insert(starts, 0, 0)
+        if diff.size > 0 and diff[-1]:
+            ends = np.append(ends, len(diff))
+        for s, e in zip(starts, ends):
+            ax.axvspan(results_df['time'].iloc[s],
+                       results_df['time'].iloc[min(e - 1, len(results_df) - 1)],
+                       facecolor='#e8e8e8', alpha=0.55,
+                       label='ML ≠ DA' if s == starts[0] else None)
+
+        ax.set_title(f'{study_name} — ML Predictions (XGBoost Hybrid, 200 ms)')
+        ax.set_ylabel('Resistance (Ω)')
+        ax.legend(loc='upper right', fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+        # Middle: DA labels, Bottom: GT labels
+        panel_data = [("DA Labels (full 150 Hz)", da_labels),
+                      ("Ground Truth Labels (full 150 Hz)", gt_labels)]
+        for ax_idx, (title, data) in enumerate(panel_data):
+            ax = axes[ax_idx + 1]
+            unlabeled_mask = data == -1
+            if unlabeled_mask.any():
+                ax.scatter(full_times[unlabeled_mask], resistance[unlabeled_mask],
+                           c='black', s=2, label='unlabeled', alpha=0.4, zorder=1)
+            for lbl in [0, 1, 2]:
+                mask = data == lbl
+                ax.scatter(full_times[mask], resistance[mask], c=colors[lbl], s=2,
+                           label=lbl_names[lbl], alpha=0.7, zorder=2)
+            ax.set_title(f'{study_name} — {title}')
+            ax.set_ylabel('Resistance (Ω)')
+            ax.legend(loc='upper right', fontsize=8)
+            ax.grid(True, alpha=0.3)
+            if ax_idx == 1:
+                ax.set_xlabel('Time (seconds)')
+
+        plt.tight_layout(h_pad=0.8)
+        plt.savefig(OUTPUT_FOLDER / f"{study_name}_ml_da_gt_three_panel.png",
+                    dpi=300, bbox_inches='tight')
+        plt.close()
+
 
 # ────────────────────────────────────────────────
 # Main
 # ────────────────────────────────────────────────
 def main():
     print("=" * 60)
-    print("  WAVELET SCATTERING + XGBoost")
+    print("  HYBRID XGBoost (21 hand-crafted + 126 scattering = 147 features)")
     print("=" * 60)
-    print(f"  Scattering: J=6, Q=8, {SCATTERING_DIM} features/window")
+    print(f"  Hand-crafted: {active_dim} features (clot_wall_focused)")
+    print(f"  Scattering:   {SCATTERING_DIM} features (J=6, Q=8)")
+    print(f"  Total:        {HYBRID_DIM} features per window")
     print(f"  Window: {WINDOW_SEC}s ({WINDOW_SAMPLES} samples)")
     print(f"  Stride: {STRIDE_SAMPLES} samples")
+    print(f"  Temperature: {TEMPERATURE}")
     print()
 
     # ── Step 1: Extract training features ──
@@ -406,7 +550,7 @@ def main():
         ml = np.array(all_ml)
 
         print("\n" + "=" * 60)
-        print("GLOBAL SUMMARY — XGBoost + Scattering")
+        print("GLOBAL SUMMARY — Feats + Scattering + XGBoost (Hybrid)")
         print("=" * 60)
         da_f1 = f1_score(gt, da, average='macro')
         ml_f1 = f1_score(gt, ml, average='macro')
@@ -443,7 +587,7 @@ def main():
         # Save
         summary_path = OUTPUT_FOLDER / "global_summary.txt"
         with open(summary_path, 'w') as f:
-            f.write("GLOBAL SUMMARY — XGBoost + Wavelet Scattering\n")
+            f.write("GLOBAL SUMMARY — Feats + Scattering + XGBoost (Hybrid)\n")
             f.write(f"CV F1-macro: {cv_f1:.4f}\n\n")
             f.write(f"DA  Accuracy: {da_acc:.4f}    F1-macro: {da_f1:.4f}\n")
             f.write(f"ML  Accuracy: {ml_acc:.4f}    F1-macro: {ml_f1:.4f}\n")
