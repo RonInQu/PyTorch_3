@@ -1,24 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-LabelingWithDuration.py — Duration-filtered labeling for sustained events only.
+Labeling_5Names_V6.py — 5-class aware labeling (blood, clot, wall, contrast, saline)
 
-Based on Labeling_5Names_V6.py with added MIN_TISSUE_DURATION_SEC filter.
-
-Training: ALL non-tissue events are blanked to blood_median+noise (label=0).
-Short tissue events (< MIN_TISSUE_DURATION_SEC) are also blanked to blood.
-Only sustained clot/wall events keep their real resistance values.
+Training: ALL non-tissue events are blanked to blood_median+noise (label=0)
+regardless of da_label or R value.  Only blood (6,12), clot (7,11), and wall (23)
+keep their real resistance values.
 
 Testing: ALL data kept including artifacts. R>5000 clipped to 5000 (not blanked).
-NO duration filter — all tissue events (including short ones) keep original labels.
-This gives honest real-world evaluation where the model sees everything.
 Labels: blood/non-tissue=0, clot=1, wall=2.
 
 Graphics: all 5 event types shown with distinct colors; contrast spikes shown at full
 height (not clipped by the >5000 outlier mask).
 
-Rationale: Short spikes (<5s) are easily handled by DA via height thresholds.
-ML should focus on sustained events where DA struggles. By blanking short events
-in both train and test, F1 is measured only on the domain ML is responsible for.
+Based on LabelingMax_v6.py (baseline 04.07 behavior preserved for blood/clot/wall).
 """
 
 import pandas as pd
@@ -38,14 +32,6 @@ import numpy as np
 input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\ReAnalyisOfExpts\New_April10'
 
 NOISE_VALUE = 5
-SAMPLE_RATE = 150
-
-# Minimum tissue event duration (seconds). Clot/wall events shorter than this
-# are blanked to blood_median+noise in BOTH training and testing.
-# Rationale: short spikes (<5s) are easily handled by DA via height thresholds;
-# ML should focus on sustained events where DA struggles.
-# Set to None or 0 to disable this filter.
-MIN_TISSUE_DURATION_SEC = 7.0
 
 output_base = os.path.join(input_folder, 'processedResults')
 training_folder = os.path.join(output_base, 'training')
@@ -62,7 +48,6 @@ if not parquet_files:
     raise ValueError(f"No parquet files found in {input_folder}")
 
 print(f"Found {len(parquet_files)} file(s) to process.")
-print(f"MIN_TISSUE_DURATION_SEC = {MIN_TISSUE_DURATION_SEC}")
 
 # Event definitions
 blood_events    = [6, 12]
@@ -104,36 +89,6 @@ def crop_to_blood_range(df, event_col='event_type_1', time_col=None):
     return cropped, (first_time, last_time)
 
 
-def blank_short_tissue_events(df, resistance_col, label_col, blood_median, min_dur_sec):
-    """Blank clot/wall events shorter than min_dur_sec to blood_median+noise.
-    
-    Modifies df in-place. Returns count of blanked events and samples.
-    """
-    if not min_dur_sec or min_dur_sec <= 0:
-        return 0, 0
-
-    min_samples = int(min_dur_sec * SAMPLE_RATE)
-    labels = df[label_col].values
-    n_events_blanked = 0
-    n_samples_blanked = 0
-
-    for cls in [1, 2]:  # clot, wall
-        cls_mask = (labels == cls).astype(int)
-        diff = np.diff(np.concatenate([[0], cls_mask, [0]]))
-        starts = np.where(diff == 1)[0]
-        ends = np.where(diff == -1)[0]
-        for s, e in zip(starts, ends):
-            if (e - s) < min_samples:
-                idx = df.index[s:e]
-                noise = NOISE_VALUE * np.random.randn(e - s)
-                df.loc[idx, resistance_col] = blood_median + noise
-                df.loc[idx, label_col] = 0
-                n_events_blanked += 1
-                n_samples_blanked += (e - s)
-
-    return n_events_blanked, n_samples_blanked
-
-
 for file_path in parquet_files:
     study_name = os.path.basename(file_path).split('_merged_rec_and_event_')[1].split('.parquet')[0]
     print(f"\nProcessing: {study_name}")
@@ -173,7 +128,7 @@ for file_path in parquet_files:
         return 0   # unrecognized events (13,25,etc) → blood, keep real R (baseline behavior)
 
     # ===================================================================
-    # 1. TRAINING: Blank ALL non-tissue events + outliers + short events
+    # 1. TRAINING: Blank ALL non-tissue events + outliers
     # ===================================================================
     df_training = df_cropped.copy()
 
@@ -199,17 +154,6 @@ for file_path in parquet_files:
         df_training.loc[blank_mask, resistance_col] = blood_median + noise
         df_training.loc[blank_mask, 'label'] = 0
 
-    # Blank short-duration tissue events (< MIN_TISSUE_DURATION_SEC)
-    if MIN_TISSUE_DURATION_SEC:
-        blood_median_for_short = df_training.loc[df_training['label'] == 0, resistance_col].median()
-        if pd.isna(blood_median_for_short):
-            blood_median_for_short = df_training[resistance_col].median()
-        n_evt, n_samp = blank_short_tissue_events(
-            df_training, resistance_col, 'label', blood_median_for_short, MIN_TISSUE_DURATION_SEC)
-        if n_evt > 0:
-            print(f"  Short events blanked (training): {n_evt} events, {n_samp} samples "
-                  f"(< {MIN_TISSUE_DURATION_SEC}s)")
-
     df_training_out = pd.DataFrame({
         'timeInMS': (df_training[time_col] * 1000).astype(int),
         'magRLoadAdjusted': df_training[resistance_col],
@@ -219,7 +163,7 @@ for file_path in parquet_files:
 
     training_out_path = os.path.join(training_folder, f'{study_name}_labeled_segment.parquet')
     df_training_out.to_parquet(training_out_path, index=True)
-    print(f"  Saved training (artifacts + short events blanked)")
+    print(f"  Saved training (artifacts always blanked)")
 
     # ===================================================================
     # 2. GRAPHICS: Show all 5 event types with distinct colors
@@ -273,7 +217,7 @@ for file_path in parquet_files:
         print(f"  Saved graphics (5-class view)")
 
         # ── Training-view graphic: colored by label after blanking ──
-        # Shows exactly what the model sees during training (including duration filter)
+        # Shows exactly what the model sees during training
         train_label_colors = {0: ('black', 'blood'), 1: ('red', 'clot'), 2: ('blue', 'wall')}
 
         plt.figure(figsize=(14, 7))
@@ -294,7 +238,7 @@ for file_path in parquet_files:
                 seen_labels.add(name)
 
         plt.title(f"{study_name} — Training View (as seen by model)\n"
-                  f"After blanking: artifacts, outliers, short events (<{MIN_TISSUE_DURATION_SEC}s) → blood")
+                  f"After blanking: artifacts, outliers, da_label==0 non-tissue → blood")
         plt.xlabel('Time (seconds)')
         plt.ylabel('Resistance (Ω)')
         plt.grid(True, alpha=0.3)
@@ -307,7 +251,8 @@ for file_path in parquet_files:
 
     # ===================================================================
     # 3. TESTING: Keep ALL data with real R values, clip R>5000 to 5000
-    #    Short events blanked same as training for consistent evaluation.
+    #    No blanking to blood median — just cap outlier spikes at 5000.
+    #    Matches the 5-class graphics view.
     # ===================================================================
     df_testing = df_cropped.copy()
     if 'curr_led_state' in df_testing.columns:
@@ -316,6 +261,8 @@ for file_path in parquet_files:
         df_testing['da_label'] = 0
 
     print("  da_label distribution:", df_testing['da_label'].value_counts().sort_index().to_dict())
+
+    df_testing['label'] = df_testing[event_col].apply(assign_numeric_label)
 
     # Clip R>5000 to 5000 (not blanked, just capped)
     n_outlier = (df_testing[resistance_col] > 5000).sum()
@@ -326,11 +273,6 @@ for file_path in parquet_files:
     print(f"  Test: {n_non_tissue} non-tissue events KEPT ({n_non_tissue/len(df_testing)*100:.1f}%), "
           f"{n_outlier} outliers clipped to 5000")
 
-    # Assign labels before duration filter
-    df_testing['label'] = df_testing[event_col].apply(assign_numeric_label)
-
-    # NO duration filter on test data — full duration for honest evaluation
-
     df_testing_out = pd.DataFrame({
         'timeInMS': (df_testing[time_col] * 1000).astype(int),
         'magRLoadAdjusted': df_testing[resistance_col],
@@ -340,8 +282,6 @@ for file_path in parquet_files:
 
     testing_out_path = os.path.join(testing_folder, f'{study_name}_labeled_segment.parquet')
     df_testing_out.to_parquet(testing_out_path, index=True)
-    print(f"  Saved testing (R>5000 clipped, full duration — no short-event filter)")
+    print(f"  Saved testing (all data kept, R>5000 clipped to 5000)")
 
-print(f"\nAll files processed!")
-print(f"  Training: non-tissue blanked, short events (<{MIN_TISSUE_DURATION_SEC}s) blanked.")
-print(f"  Testing: all data kept, R>5000 clipped, NO duration filter (full duration).")
+print("\nAll files processed! Training: non-tissue blanked. Testing: all data kept, R>5000 clipped to 5000.")

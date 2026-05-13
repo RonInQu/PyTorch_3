@@ -19,8 +19,8 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from scipy import stats
-from scipy.signal import medfilt, find_peaks
+#from scipy import stats
+#from scipy.signal import medfilt, find_peaks
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 import matplotlib
 matplotlib.use('Agg')
@@ -179,16 +179,25 @@ class LiveClotDetector:
         self.hidden = None
         self.posterior = np.array([INIT_BLOOD_PROB, INIT_CLOT_PROB, INIT_WALL_PROB],
                                   dtype=np.float32)
+        self.raw_probs = self.posterior.copy()
         self.feat_history = deque(maxlen=SEQ_LEN)
 
     @torch.no_grad()
-    def predict(self, active_feats):
+    def predict(self, active_feats, da_label=None):
         """
         Run one prediction step. active_feats is 23-dim (21 impedance + 2 DA fracs).
         Returns a 3-element posterior [P(blood), P(clot), P(wall)].
 
-        No DA override logic — the model sees DA as input features.
+        DA blood reset is preserved as a safety net.
+        Clot/wall DA override is removed — the model sees DA as input features.
         """
+        # ── DA blood hard reset (safety net) ──
+        if da_label is not None and da_label == 0:
+            self.posterior = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+            self.hidden = None
+            self.feat_history.clear()
+            return self.posterior.copy()
+
         # ── Step 1: Scale features & run GRU ──
         scaled = self.scaler.transform(active_feats.reshape(1, -1))[0]
         self.feat_history.append(scaled)
@@ -274,7 +283,7 @@ def process_file(filepath: Path,
             full_feats = np.concatenate([impedance_feats,
                                          np.array([da_clot_frac, da_wall_frac], dtype=np.float32)])
 
-            post = detector.predict(full_feats)
+            post = detector.predict(full_feats, da_label=da_now)
             raw = detector.raw_probs
             status = np.argmax(post)
             entropy = -np.sum(post * np.log(post + 1e-12))

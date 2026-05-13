@@ -84,9 +84,9 @@ INIT_CLOT_PROB  = (1 - INIT_BLOOD_PROB) /2
 INIT_WALL_PROB  = (1 - INIT_BLOOD_PROB) /2
 
 # Feature set selection
-FEATURE_SET = "clot_wall_shape"
+FEATURE_SET = "clot_wall_focused"
 
-TOTAL_FEATURES = 69
+TOTAL_FEATURES = 64
 
 # Paths
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -121,11 +121,6 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent
 # f61:     Descent smoothness — std of deriv in post-peak region / range; wall=smooth, clot=noisy
 # f62:     Shape asymmetry — skewness of normalized signal; clot=right-skewed, wall=left-skewed
 # f63:     Plateau ratio — fraction of window within 10% of max; wall=high(sustained), clot=low(spike)
-# f64:     Direction changes per second — clot=high(noisy), wall=low(smooth) [Cohen's d=0.726]
-# f65:     Peaks per second — clot=high(spiky), wall=low(sustained) [Cohen's d=0.596]
-# f66:     Mean absolute curvature — clot=high(curved), wall=low(flat) [Cohen's d=0.576]
-# f67:     Longest monotonic run fraction — wall=high(long runs), clot=low [Cohen's d=0.574]
-# f68:     Detrended zero-crossing rate — clot=high(oscillating), wall=low [Cohen's d=0.511]
 
 FEATURE_SETS = {
     "all":               list(range(TOTAL_FEATURES)),
@@ -156,10 +151,6 @@ FEATURE_SETS = {
                           57, 58, 59, 60, 61, 62, 63],
     # v8: rise-shape only (7) — purely morphological, no other features
     "rise_shape_only":   [57, 58, 59, 60, 61, 62, 63],
-    # Shape features: clot_wall_focused (21) + top 5 shape morphology (f64-f68)
-    # Shape features have Cohen's d 0.51-0.73 for clot-wall separation
-    "clot_wall_shape":   [39, 21, 4, 19, 41, 9, 5, 23, 0, 34, 28, 29, 3, 38, 17, 32, 42, 27, 1, 20, 40,
-                          64, 65, 66, 67, 68],
 }
 
 # ────────────────────────────────────────────────
@@ -189,7 +180,6 @@ class  ClotFeatureExtractor:
     _CLOT_WALL   = {46, 47, 48, 49, 50}  # New clot-vs-wall discriminative features
     _SHORT_SLOPES = {51, 52, 53, 54, 55, 56}  # Short-timescale slopes (0.1s-0.6s)
     _RISE_SHAPE  = {57, 58, 59, 60, 61, 62, 63}  # Rise-shape features (R-level invariant)
-    _SHAPE       = {64, 65, 66, 67, 68}  # Shape/morphology features (high C-W discrimination)
 
     def __init__(self, sample_rate=150, window_sec=5.0, active_features=None):
         self.fs = sample_rate
@@ -221,7 +211,6 @@ class  ClotFeatureExtractor:
         self._need_clot_wall   = bool(aset & self._CLOT_WALL)
         self._need_short_slopes = bool(aset & self._SHORT_SLOPES)
         self._need_rise_shape  = bool(aset & self._RISE_SHAPE)
-        self._need_shape       = bool(aset & self._SHAPE)
         # Shared dependency: first derivative needed by deriv, hjorth, or deriv2
         self._need_deriv_data  = self._need_deriv or self._need_hjorth or self._need_deriv2
 
@@ -532,50 +521,6 @@ class  ClotFeatureExtractor:
                 # Flat/low-range signal — set all to 0
                 f[57] = f[58] = f[59] = f[60] = f[61] = f[62] = f[63] = 0.0
 
-        # ── f64-f68: Shape/morphology features (high C-W discrimination) ──
-        # These capture signal geometry that strongly separates clot from wall:
-        # f64: dir_chg_per_s  (Cohen's d = 0.726) — direction changes per second
-        # f65: peaks_per_s    (0.596) — peaks per second
-        # f66: curvature      (0.576) — mean absolute curvature
-        # f67: longest_mono   (0.574) — longest monotonic run fraction
-        # f68: zero_cross     (0.511) — detrended zero-crossing rate
-        if self._need_shape:
-            d_diff = np.diff(data) if deriv is None else deriv
-            signs = np.sign(d_diff)
-            signs[signs == 0] = 1
-            sign_changes = np.diff(signs)
-
-            # f64: direction changes per second
-            dir_changes = np.sum(sign_changes != 0)
-            f[64] = dir_changes / (n / self.fs)
-
-            # f65: peaks per second
-            data_std = f[1] if self._need_stats else np.std(data)
-            if data_std > 0.01:
-                peaks, _ = find_peaks(data, prominence=data_std * 0.3)
-                f[65] = len(peaks) / (n / self.fs)
-            else:
-                f[65] = 0.0
-
-            # f66: mean absolute curvature
-            dd = np.diff(d_diff)
-            denom = (1.0 + d_diff[:-1] ** 2) ** 1.5
-            f[66] = np.mean(np.abs(dd) / denom)
-
-            # f67: longest monotonic run fraction
-            changes_idx = np.where(sign_changes != 0)[0]
-            runs = np.diff(np.concatenate([[0], changes_idx, [len(signs)]]))
-            f[67] = np.max(runs) / len(d_diff) if len(runs) > 0 else 0.0
-
-            # f68: zero crossing rate (detrended)
-            kernel = 150  # 1s smoothing
-            if n > kernel * 2:
-                trend = np.convolve(data, np.ones(kernel) / kernel, 'same')
-                detr = data[kernel // 2: -(kernel // 2)] - trend[kernel // 2: -(kernel // 2)]
-                f[68] = np.sum(np.diff(np.sign(detr)) != 0) / max(len(detr), 1)
-            else:
-                f[68] = 0.0
-
         if self._active_features is not None:
             return f[self._active_features]
         return f.copy()
@@ -614,8 +559,8 @@ class ClotGRU(nn.Module):
         nn.init.zeros_(self.gru.bias_ih_l0)
         nn.init.zeros_(self.gru.bias_hh_l0)
 
-        self.fc1 = nn.Linear(hidden_size, 24)
-        self.fc2 = nn.Linear(24, output_size)
+        self.fc1 = nn.Linear(hidden_size, 12)
+        self.fc2 = nn.Linear(12, output_size)
 
         nn.init.kaiming_uniform_(self.fc1.weight, nonlinearity='relu')
         nn.init.zeros_(self.fc1.bias)

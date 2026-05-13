@@ -58,6 +58,11 @@ feature_descriptions = {
     59: "rise linearity (R²)", 60: "peak sharpness",
     61: "descent smoothness", 62: "shape asymmetry (skew)",
     63: "plateau ratio",
+    64: "dir changes/sec",
+    65: "peaks/sec",
+    66: "mean abs curvature",
+    67: "longest mono run frac",
+    68: "zero crossing rate (detr)",
 }
 
 # ── Config ──
