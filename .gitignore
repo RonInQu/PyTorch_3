@@ -45,6 +45,7 @@ src/models/*.json
 # Exceptions — track these specific files
 !**/manifest.txt
 !**/global_summary.txt
+!README.md
 
 # Editors
 .ipynb_checkpoints/
