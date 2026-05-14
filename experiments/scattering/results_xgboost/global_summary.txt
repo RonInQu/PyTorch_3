@@ -1,0 +1,9 @@
+GLOBAL SUMMARY — XGBoost + Wavelet Scattering
+CV F1-macro: 0.7646
+
+DA  Accuracy: 0.8548    F1-macro: 0.6461
+ML  Accuracy: 0.8638    F1-macro: 0.6633
+Improvement: Acc +0.0090   F1 +0.0171
+
+Overrides: 146634, Correct: 67646, Harmful: 31250, Net: +36396
+Override Precision: 0.4613

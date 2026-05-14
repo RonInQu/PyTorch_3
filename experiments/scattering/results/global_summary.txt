@@ -1,0 +1,5 @@
+Scattering GRU Global Summary
+DA  Acc=0.8548  F1=0.6461
+ML  Acc=0.8389  F1=0.5570
+Improvement: Acc -0.0159  F1 -0.0891
+Overrides: 353263, Correct: 99186, Harmful: 163467, Net: -64281

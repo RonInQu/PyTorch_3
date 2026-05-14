@@ -1,0 +1,135 @@
+# Pipeline version — 2026-04-23_163216
+# Feature set: clot_wall_focused (21 features)
+# SEQ_LEN: 8
+# Best F1-macro: 0.7692
+# Note: Best seed 456
+# Model: clot_gru_trained.pt
+# Scaler: clot_feature_scaler_5s_seq8_clot_wall_focused_21_f1cb.pkl
+
+=== LABELING CONFIG ===
+Blood events:    [6, 12]
+Clot events:     [7, 11]
+Wall events:     [23]
+Artifact events: [8 (contrast), 15 (saline)] — always blanked
+Noise value:     5
+Blank mask:      ~tissue | (R>5000)  [all non-tissue blanked]
+
+=== TRAINING CONFIG ===
+Seeds:          [456]
+Window sec:     5.0
+Stride samples: 30
+Batch size:     1024
+Epochs:         100
+Patience:       15
+Learning rate:  0.0001
+Weight decay:   0.0001
+Class weights:  [1.0, 1.0, 1.0]
+
+=== INFERENCE CONFIG ===
+Temperature:           1.2
+GRU override clot:     0.8
+GRU override wall:     0.7
+DA label confidence:   0.92
+EMA blood prior:       0.78
+EMA exit to blood:     0.35
+EMA same class:        0.95
+EMA cross class:       0.95
+Init posterior:         [0.95, 0.025000000000000022, 0.025000000000000022]
+Report interval ms:    200
+
+=== TRAINING (79) ===
+05EA15A5
+09419CF3
+0D9C36A0
+15A93526
+15AC6217
+16621B3E
+18A9A741
+1A8F0795
+24AFD80C
+26E955BA
+325A317A
+34268034
+376DCB0D
+3B90D74B
+3E146478
+42CF0AE3
+453F37DC
+4633BDC0
+48663E05
+4B4BF4DB
+50ACAF6E
+58F78079
+5A31F836
+6E7EB56C
+71119917
+73CB9CA1
+743CBF58
+7873BF1D
+81FC0C79
+847A1E3F
+86FA6755
+8860D580
+8ECEADA6
+8EE40C79
+903FE519
+9C63125D
+B58B74D7
+B9E8EB7F
+BAPT0001
+CENT0006
+CENT0007
+CENT0009
+CENT0102
+CENT0161
+CENT0165
+CENT0176
+CENT0182
+CENT0231
+D25DD102
+D4793E80
+DBEF90C4
+DD2DFAF4
+EA7C0500
+ELCA0179
+F39B2DEA
+F427536B
+F60DF902
+FE454F2D
+HUNT0130
+HUNT0134
+HUNT0136
+HUNT0150
+HUNT0159
+HUNT0177
+HUNT0178
+HUNT0198
+NASHUN01
+NASHUN02
+SOMI0153
+STCL0090
+STCLD002
+SUMM0119
+SUMM0149
+SUMM0152
+SUMM0154
+SUMM0163
+SUMM0183
+UH000008
+UNIH0148
+
+=== TEST (14) ===
+00F628C9
+33CFB812
+43140EA7
+4E3747A0
+530618CC
+819421BC
+A225B105
+AFF18ECE
+CENT0008
+HACK0140
+HUNT0120
+STCLD001
+SUMM0127
+UHMAX001

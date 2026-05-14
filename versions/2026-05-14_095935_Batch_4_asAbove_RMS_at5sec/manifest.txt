@@ -1,0 +1,135 @@
+# Pipeline version — 2026-05-14_095935
+# Feature set: clot_wall_texture (22 features)
+# SEQ_LEN: 8
+# Best F1-macro: 0.7560
+# Note: Best seed 456
+# Model: clot_gru_trained.pt
+# Scaler: clot_feature_scaler_5s_seq8_clot_wall_texture_22_b3de.pkl
+
+=== LABELING CONFIG ===
+Blood events:    [6, 12]
+Clot events:     [7, 11]
+Wall events:     [23]
+Artifact events: [8 (contrast), 15 (saline)] — always blanked
+Noise value:     5
+Blank mask:      ~tissue | (R>5000)  [all non-tissue blanked]
+
+=== TRAINING CONFIG ===
+Seeds:          [456]
+Window sec:     5.0
+Stride samples: 30
+Batch size:     1024
+Epochs:         100
+Patience:       15
+Learning rate:  0.0001
+Weight decay:   0.0001
+Class weights:  [1.0, 1.0, 1.0]
+
+=== INFERENCE CONFIG ===
+Temperature:           1.5
+GRU override clot:     0.8
+GRU override wall:     0.92
+DA label confidence:   0.92
+EMA blood prior:       0.78
+EMA exit to blood:     0.35
+EMA same class:        0.97
+EMA cross class:       0.99
+Init posterior:         [0.95, 0.025000000000000022, 0.025000000000000022]
+Report interval ms:    200
+
+=== TRAINING (85) ===
+00F628C9
+05EA15A5
+09419CF3
+0D9C36A0
+15A93526
+15AC6217
+16621B3E
+18A9A741
+1A8F0795
+24AFD80C
+26E955BA
+325A317A
+34268034
+376DCB0D
+3B90D74B
+3E146478
+42CF0AE3
+43140EA7
+453F37DC
+4633BDC0
+48663E05
+4B4BF4DB
+4E3747A0
+50ACAF6E
+530618CC
+58F78079
+5A31F836
+6E7EB56C
+71119917
+73CB9CA1
+743CBF58
+7873BF1D
+81FC0C79
+86FA6755
+8860D580
+8EE40C79
+903FE519
+9C63125D
+A225B105
+AFF18ECE
+B58B74D7
+B9E8EB7F
+BAPT0001
+CENT0006
+CENT0007
+CENT0009
+CENT0102
+CENT0161
+CENT0165
+CENT0176
+CENT0182
+CENT0231
+D25DD102
+D4793E80
+DBEF90C4
+EA7C0500
+ELCA0179
+F39B2DEA
+F60DF902
+FE454F2D
+HACK0140
+HUNT0120
+HUNT0130
+HUNT0134
+HUNT0136
+HUNT0150
+HUNT0159
+HUNT0177
+HUNT0178
+HUNT0198
+NASHUN01
+NASHUN02
+SOMI0153
+STCL0090
+STCLD001
+STCLD002
+SUMM0119
+SUMM0149
+SUMM0152
+SUMM0154
+SUMM0163
+SUMM0183
+UH000008
+UHMAX001
+UNIH0148
+
+=== TEST (8) ===
+33CFB812
+819421BC
+847A1E3F
+8ECEADA6
+CENT0008
+DD2DFAF4
+F427536B
+SUMM0127

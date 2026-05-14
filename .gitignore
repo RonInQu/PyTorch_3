@@ -42,6 +42,10 @@ src/models/*.json
 *.npz
 *.pptx
 
+# Exceptions — track these specific files
+!**/manifest.txt
+!**/global_summary.txt
+
 # Editors
 .ipynb_checkpoints/
 .spyderproject
