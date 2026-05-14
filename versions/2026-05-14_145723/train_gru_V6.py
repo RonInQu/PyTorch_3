@@ -52,7 +52,7 @@ LR = 0.0001
 WEIGHT_DECAY = 1e-4
 
 # Loss function: "cross_entropy" or "focal"
-LOSS_FN = "cross_entropy"   # Set to "focal" to use focal loss
+LOSS_FN = "focal"   # Set to "focal" to use focal loss
 FOCAL_GAMMA = 2.0            # Focal loss focusing parameter (only used when LOSS_FN="focal")
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
