@@ -51,10 +51,6 @@ PATIENCE = 15
 LR = 0.0001
 WEIGHT_DECAY = 1e-4
 
-# Loss function: "cross_entropy" or "focal"
-LOSS_FN = "focal"   # Set to "focal" to use focal loss
-FOCAL_GAMMA = 2.0            # Focal loss focusing parameter (only used when LOSS_FN="focal")
-
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 NUM_WORKERS = 8
@@ -288,45 +284,13 @@ def compute_final_class_weights(y):
 
 
 # ────────────────────────────────────────────────
-# Focal Loss
-# ────────────────────────────────────────────────
-
-class FocalLoss(nn.Module):
-    """Focal loss (Lin et al., 2017) for multi-class classification.
-    Down-weights easy examples by factor (1-p_t)^gamma, focusing training
-    on hard boundary cases.  gamma=0 is equivalent to CrossEntropyLoss.
-    """
-    def __init__(self, weight=None, gamma=2.0, reduction='mean'):
-        super().__init__()
-        self.gamma = gamma
-        self.reduction = reduction
-        self.ce = nn.CrossEntropyLoss(weight=weight, reduction='none')
-
-    def forward(self, logits, targets):
-        ce_loss = self.ce(logits, targets)
-        p_t = torch.exp(-ce_loss)  # probability of correct class
-        focal_weight = (1.0 - p_t) ** self.gamma
-        loss = focal_weight * ce_loss
-        if self.reduction == 'mean':
-            return loss.mean()
-        elif self.reduction == 'sum':
-            return loss.sum()
-        return loss
-
-
-# ────────────────────────────────────────────────
 # Training fold
 # ────────────────────────────────────────────────
 
 def train_fold(model, train_loader, val_loader, class_weights):
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
-
-    if LOSS_FN == "focal":
-        criterion = FocalLoss(weight=class_weights.to(DEVICE), gamma=FOCAL_GAMMA)
-        print(f"  Using Focal Loss (gamma={FOCAL_GAMMA})")
-    else:
-        criterion = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE))
+    criterion = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE))
 
     best_f1 = 0
     best_state = None

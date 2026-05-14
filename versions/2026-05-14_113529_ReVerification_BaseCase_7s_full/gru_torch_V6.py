@@ -569,14 +569,8 @@ dim_str = f"{FEATURE_SET}_{active_dim}_{_idx_hash:04x}"
 
 SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
 MODEL_PATH = PROJECT_ROOT / "src" / "training" / "clot_gru_trained.pt"
-
-# ── Ensemble configuration ──
-# Set ENSEMBLE_SEEDS to a list of seeds to average multiple models' outputs.
-# Set to None or [] to use a single model (MODEL_PATH) — original behavior.
-ENSEMBLE_SEEDS = None  # Set to [42, 123, 456, 789, 2026] for ensemble inference
 USE_DENOISED = False   # Set True to use pulse-subtracted data from test_data_denoised/
-SAVE_PARQUET = True    # Set True to save detection_results .parquet files
-SAVE_CSV = False       # Set True to save detection_results .csv files
+SAVE_CSV_PARQUET = True  # Set True to save detection_results .csv and .parquet files
 TEST_DATA_DIR = PROJECT_ROOT / ("test_data_denoised" if USE_DENOISED else "test_data")
 OUTPUT_FOLDER = PROJECT_ROOT / "inference_deploy" / "Results"
 
@@ -618,42 +612,13 @@ class ClotGRU(nn.Module):
 # LiveClotDetector
 # ────────────────────────────────────────────────
 class LiveClotDetector:
-    def __init__(self, model_path=MODEL_PATH, scaler_path=SCALER_PATH,
-                 ensemble_seeds=ENSEMBLE_SEEDS):
+    def __init__(self, model_path=MODEL_PATH, scaler_path=SCALER_PATH):
         self.scaler = joblib.load(scaler_path)
+        self.model = ClotGRU().to(DEVICE)
+        self.model.load_state_dict(torch.load(model_path, map_location=DEVICE))
+        self.model.eval()
 
-        # Load model(s)
-        if ensemble_seeds:
-            # Ensemble mode: load one model per seed
-            self.models = []
-            self.hiddens = []
-            model_dir = PROJECT_ROOT / "src" / "training"
-            for seed in ensemble_seeds:
-                # Find the best model for this seed (highest F1 in filename)
-                pattern = f"clot_gru_trained_seq{SEQ_LEN}_{FEATURE_SET}_seed{seed}_f1*.pt"
-                candidates = sorted(model_dir.glob(pattern))
-                if not candidates:
-                    print(f"  WARNING: No model found for seed {seed} ({pattern})")
-                    continue
-                # Pick the one with highest F1 (last alphabetically since f1 is in filename)
-                best_path = candidates[-1]
-                m = ClotGRU().to(DEVICE)
-                m.load_state_dict(torch.load(best_path, map_location=DEVICE))
-                m.eval()
-                self.models.append(m)
-                self.hiddens.append(None)
-            if not self.models:
-                raise FileNotFoundError(f"No ensemble models found for seeds {ensemble_seeds}")
-            self.ensemble = True
-            print(f"  Ensemble: loaded {len(self.models)} models (seeds: {ensemble_seeds})")
-        else:
-            # Single model mode (original behavior)
-            self.models = [ClotGRU().to(DEVICE)]
-            self.models[0].load_state_dict(torch.load(model_path, map_location=DEVICE))
-            self.models[0].eval()
-            self.hiddens = [None]
-            self.ensemble = False
-
+        self.hidden = None
         self.posterior = np.array([INIT_BLOOD_PROB, INIT_CLOT_PROB, INIT_WALL_PROB],
                                   dtype=np.float32)
         self.feat_history = deque(maxlen=SEQ_LEN)
@@ -689,14 +654,13 @@ class LiveClotDetector:
         Run one prediction step.  Returns a 3-element posterior [P(blood), P(clot), P(wall)].
 
         Pipeline:
-          1. Scale features, build sequence, run GRU(s) → raw probs
-             (ensemble: average logits across all models before softmax)
+          1. Scale features, build sequence, run GRU → raw probs
           2. If DA label present, optionally override GRU probs
           3. EMA-blend new probs into the running posterior
           4. Post-EMA safety check: force DA label if GRU still disagrees
         """
 
-        # ── Step 1: Scale features & run GRU(s) ──
+        # ── Step 1: Scale features & run GRU ──
         scaled = self.scaler.transform(active_feats.reshape(1, -1))[0]
         self.feat_history.append(scaled)
 
@@ -710,18 +674,12 @@ class LiveClotDetector:
         seq = np.array(seq_list, dtype=np.float32)
         x = torch.from_numpy(seq).float().unsqueeze(0).to(DEVICE)
 
-        # Run all models and average logits
-        all_logits = []
-        for i, model in enumerate(self.models):
-            logits, h = model(x, self.hiddens[i])
-            self.hiddens[i] = h.detach() if h is not None else None
-            all_logits.append(logits)
-
-        # Average logits (ensemble) or use single logits
-        avg_logits = torch.stack(all_logits).mean(dim=0)
+        logits, self.hidden = self.model(x, self.hidden)
+        if self.hidden is not None:
+            self.hidden = self.hidden.detach()
 
         # Temperature-scaled softmax.  Tune TEMPERATURE (>1 → softer/less peaky probs)
-        probs = torch.softmax(avg_logits / TEMPERATURE, 1).squeeze(0).cpu().numpy()
+        probs = torch.softmax(logits / TEMPERATURE, 1).squeeze(0).cpu().numpy()
         self.raw_probs = probs.copy()  # store for diagnostics
 
         prior_idx = np.argmax(self.posterior)  # class the posterior currently favors
@@ -733,7 +691,7 @@ class LiveClotDetector:
             if da_label == 0:
                 # DA says blood → hard reset: clear history and return certain blood.
                 self.posterior = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-                self.hiddens = [None] * len(self.models)
+                self.hidden = None
                 self.feat_history.clear()
                 return self.posterior.copy()
 
@@ -791,8 +749,7 @@ def process_file(filepath: Path,
                  all_da_labels: list,
                  all_ml_preds: list,
                  all_override_times: list,
-                 save_parquet: bool = True,
-                 save_csv: bool = False):
+                 save_csv_parquet: bool = False):
 
     study_name = filepath.stem
     print(f"\nProcessing: {study_name}")
@@ -836,13 +793,11 @@ def process_file(filepath: Path,
 
     results_df = pd.DataFrame(results)
 
-    # Save detection_results (optional)
-    if save_parquet:
+    # Save detection_results parquet and csv (optional)
+    if save_csv_parquet:
         results_df.to_parquet(OUTPUT_FOLDER / f"{study_name}_detection_results.parquet", index=False)
-        print(f"  Saved detection_results.parquet")
-    if save_csv:
         results_df.to_csv(OUTPUT_FOLDER / f"{study_name}_detection_results.csv", index=False)
-        print(f"  Saved detection_results.csv")
+        print(f"  Saved detection_results.parquet and .csv")
 
     # ── Probability plot (3 panels: labels, raw GRU, smoothed posterior) ──
     fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 14), sharex=True)
@@ -1012,8 +967,7 @@ def main():
                      all_da_labels=all_da_labels,
                      all_ml_preds=all_ml_preds,
                      all_override_times=all_override_times,
-                     save_parquet=SAVE_PARQUET,
-                     save_csv=SAVE_CSV)
+                     save_csv_parquet=SAVE_CSV_PARQUET)
 
     # ── Global summary ──
     if all_gt_labels:
