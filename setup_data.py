@@ -13,11 +13,11 @@ import shutil
 from pathlib import Path
 
 # ── Source directories ──
-# SRC_TRAIN_DIR = Path('vApril10_data_set') / 'training'
-# SRC_TEST_DIR  = Path('vApril10_data_set') / 'testing'
+SRC_TRAIN_DIR = Path('vApril10_data_set') / 'training'
+SRC_TEST_DIR  = Path('vApril10_data_set') / 'testing'
 
-SRC_TRAIN_DIR = Path('vMay14_data_set') / 'training'
-SRC_TEST_DIR  = Path('vMay14_data_set') / 'testing'
+# SRC_TRAIN_DIR = Path('vMay14_data_set') / 'training'
+# SRC_TEST_DIR  = Path('vMay14_data_set') / 'testing'
 
 # ── Output directories ──
 TRAIN_OUT = Path('training_data')

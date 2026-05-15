@@ -1,7 +1,7 @@
-# Pipeline version — 2026-05-14_145723
+# Pipeline version — 2026-05-15_133541
 # Feature set: clot_wall_focused (21 features)
 # SEQ_LEN: 8
-# Best F1-macro: 0.5708
+# Best F1-macro: 0.7551
 # Note: Best seed 456
 # Model: clot_gru_trained.pt
 # Scaler: clot_feature_scaler_5s_seq8_clot_wall_focused_21_f1cb.pkl
