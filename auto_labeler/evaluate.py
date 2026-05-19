@@ -17,28 +17,31 @@ import pandas as pd
 import torch
 import matplotlib.pyplot as plt
 
-from .dataset import CHUNK_SIZE, NUM_CLASSES, TEST_STUDIES, load_study
+from .dataset import CHUNK_SIZE, NUM_CLASSES, TEST_STUDIES, build_multichannel, load_study
 from .predict import load_model, postprocess_labels, predict_file
 
 
 CLASS_NAMES = ["blood", "clot", "wall"]
-CLASS_COLORS = ["blue", "red", "green"]
+CLASS_COLORS = ["black", "red", "blue"]
 
 
 def evaluate_study(
     model, data_dir: Path, study_id: str, device: torch.device,
-    min_duration_samples: int = 1000,
+    min_duration_samples: int = 1000, multichannel: bool = True,
 ) -> dict:
     """Evaluate a single study: predict and compare to GT labels."""
     resistance, gt_labels = load_study(data_dir, study_id)
 
-    # Normalize (same as training)
-    mean = resistance.mean()
-    std = resistance.std() + 1e-8
-    resistance_norm = (resistance - mean) / std
+    # Build features matching training
+    if multichannel:
+        features = build_multichannel(resistance)  # (5, N)
+    else:
+        mean = resistance.mean()
+        std = resistance.std() + 1e-8
+        features = ((resistance - mean) / std)[np.newaxis, :]  # (1, N)
 
     # Predict
-    pred_labels = predict_file(model, resistance_norm, device)
+    pred_labels = predict_file(model, features, device)
     pred_labels = postprocess_labels(pred_labels, min_duration_samples=min_duration_samples)
 
     # Metrics
@@ -67,16 +70,19 @@ def evaluate_study(
 def plot_overlay(
     data_dir: Path, study_id: str, model, device: torch.device,
     output_dir: Path, min_duration_samples: int = 1000,
-    time_range: tuple = None,
+    multichannel: bool = True, time_range: tuple = None,
 ):
     """Generate overlay plot: resistance + GT labels + predicted labels."""
     resistance, gt_labels = load_study(data_dir, study_id)
 
-    mean = resistance.mean()
-    std = resistance.std() + 1e-8
-    resistance_norm = (resistance - mean) / std
+    if multichannel:
+        features = build_multichannel(resistance)
+    else:
+        mean = resistance.mean()
+        std = resistance.std() + 1e-8
+        features = ((resistance - mean) / std)[np.newaxis, :]
 
-    pred_labels = predict_file(model, resistance_norm, device)
+    pred_labels = predict_file(model, features, device)
     pred_labels = postprocess_labels(pred_labels, min_duration_samples=min_duration_samples)
 
     # Time axis (assume ~6ms per sample)
@@ -143,7 +149,8 @@ def main():
     device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
     print(f"Device: {device}")
 
-    model = load_model(args.checkpoint, device)
+    model, multichannel = load_model(args.checkpoint, device)
+    print(f"Multichannel: {multichannel}")
     data_dir = Path(args.data_dir)
     output_dir = Path(args.output_dir)
 
@@ -165,12 +172,14 @@ def main():
 
     results = []
     for sid in available:
-        metrics = evaluate_study(model, data_dir, sid, device, min_duration_samples=min_samples)
+        metrics = evaluate_study(model, data_dir, sid, device,
+                                 min_duration_samples=min_samples, multichannel=multichannel)
         results.append(metrics)
         print(f"  {sid}: F1={metrics['f1_macro']:.4f}, Acc={metrics['accuracy']:.4f}")
 
         if args.plot:
-            plot_overlay(data_dir, sid, model, device, output_dir / "plots", min_samples)
+            plot_overlay(data_dir, sid, model, device, output_dir / "plots",
+                         min_samples, multichannel=multichannel)
 
     # Summary
     df = pd.DataFrame(results)

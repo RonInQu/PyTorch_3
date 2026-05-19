@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 
 from .dataset import (
     CHUNK_SIZE,
+    NUM_CHANNELS,
     NUM_CLASSES,
     TRAINING_STUDIES,
     SegmentationDataset,
@@ -23,6 +24,29 @@ from .dataset import (
     create_datasets,
 )
 from .model import UNet1D, count_parameters
+
+
+class FocalLoss(nn.Module):
+    """
+    Focal Loss for imbalanced segmentation.
+    Down-weights easy examples, focuses on hard ones (e.g., clot boundaries).
+
+    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+    """
+
+    def __init__(self, alpha: torch.Tensor = None, gamma: float = 2.0):
+        super().__init__()
+        self.gamma = gamma
+        self.register_buffer("alpha", alpha)  # class weights
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # logits: (B, C, L), targets: (B, L)
+        ce_loss = nn.functional.cross_entropy(
+            logits, targets, weight=self.alpha, reduction="none"
+        )  # (B, L)
+        pt = torch.exp(-ce_loss)  # probability of correct class
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+        return focal_loss.mean()
 
 
 def compute_metrics(preds: torch.Tensor, labels: torch.Tensor, num_classes: int = NUM_CLASSES):
@@ -120,7 +144,19 @@ def main():
     parser.add_argument("--patience", type=int, default=15)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--multichannel", action="store_true", default=True,
+                        help="Use 5-channel input (default: True)")
+    parser.add_argument("--single_channel", action="store_true",
+                        help="Use single-channel raw R input")
+    parser.add_argument("--loss", type=str, default="focal", choices=["ce", "focal"],
+                        help="Loss function: 'ce' (CrossEntropy) or 'focal' (FocalLoss)")
+    parser.add_argument("--focal_gamma", type=float, default=2.0,
+                        help="Focal loss gamma parameter")
     args = parser.parse_args()
+
+    # Handle channel flag
+    if args.single_channel:
+        args.multichannel = False
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -135,6 +171,7 @@ def main():
         val_fraction=args.val_fraction,
         chunk_size=args.chunk_size,
         stride=args.stride,
+        multichannel=args.multichannel,
         seed=args.seed,
     )
 
@@ -153,17 +190,22 @@ def main():
     print(f"Class weights: {class_weights.tolist()}")
 
     # Model
+    in_channels = NUM_CHANNELS if args.multichannel else 1
     model = UNet1D(
-        in_channels=1,
+        in_channels=in_channels,
         num_classes=NUM_CLASSES,
         base_filters=args.base_filters,
         depth=args.depth,
         kernel_size=args.kernel_size,
     ).to(device)
     print(f"Model parameters: {count_parameters(model):,}")
+    print(f"Input channels: {in_channels}, Loss: {args.loss}")
 
     # Loss and optimizer
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    if args.loss == "focal":
+        criterion = FocalLoss(alpha=class_weights, gamma=args.focal_gamma)
+    else:
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )

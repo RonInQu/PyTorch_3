@@ -11,6 +11,7 @@ import torch
 from torch.utils.data import Dataset
 from pathlib import Path
 from typing import List, Tuple, Optional
+from scipy.ndimage import uniform_filter1d
 
 
 # 85 training studies from production baseline manifest (2026-05-18)
@@ -44,6 +45,7 @@ TEST_STUDIES = [
 
 NUM_CLASSES = 3
 CHUNK_SIZE = 4096  # ~24.5 seconds at 167 Hz
+NUM_CHANNELS = 5  # multi-channel input
 
 
 def load_study(data_dir: Path, study_id: str) -> Tuple[np.ndarray, np.ndarray]:
@@ -53,6 +55,43 @@ def load_study(data_dir: Path, study_id: str) -> Tuple[np.ndarray, np.ndarray]:
     resistance = df["magRLoadAdjusted"].values.astype(np.float32)
     labels = df["label"].values.astype(np.int64)
     return resistance, labels
+
+
+def build_multichannel(resistance: np.ndarray) -> np.ndarray:
+    """
+    Build multi-channel representation from raw resistance.
+
+    Channels:
+      0: z-normalized resistance
+      1: first derivative (dR/dt) — detects slope changes
+      2: second derivative (d²R/dt²) — detects curvature
+      3: 1-second moving average (context, smoothed)
+      4: detrended signal (R minus 5-second moving average)
+
+    Returns: (NUM_CHANNELS, N) float32 array
+    """
+    # Z-normalize the raw signal
+    mean = resistance.mean()
+    std = resistance.std() + 1e-8
+    r_norm = (resistance - mean) / std
+
+    # Channel 0: normalized resistance
+    ch0 = r_norm
+
+    # Channel 1: first derivative
+    ch1 = np.gradient(r_norm).astype(np.float32)
+
+    # Channel 2: second derivative
+    ch2 = np.gradient(ch1).astype(np.float32)
+
+    # Channel 3: 1-second moving average (~167 samples)
+    ch3 = uniform_filter1d(r_norm, size=167).astype(np.float32)
+
+    # Channel 4: detrended (remove 5-second trend, ~833 samples)
+    trend = uniform_filter1d(r_norm, size=833).astype(np.float32)
+    ch4 = (r_norm - trend).astype(np.float32)
+
+    return np.stack([ch0, ch1, ch2, ch3, ch4], axis=0)  # (5, N)
 
 
 def compute_class_weights(data_dir: Path, study_ids: List[str]) -> torch.Tensor:
@@ -73,7 +112,7 @@ class SegmentationDataset(Dataset):
     Dataset that chunks studies into fixed-length segments for U-Net training.
 
     Each sample is:
-      - x: (1, CHUNK_SIZE) float32 — normalized resistance
+      - x: (num_channels, CHUNK_SIZE) float32 — multi-channel features
       - y: (CHUNK_SIZE,) int64 — per-sample labels (0/1/2)
     """
 
@@ -83,13 +122,13 @@ class SegmentationDataset(Dataset):
         study_ids: List[str],
         chunk_size: int = CHUNK_SIZE,
         stride: Optional[int] = None,
-        normalize: bool = True,
+        multichannel: bool = True,
         augment: bool = False,
     ):
         self.data_dir = Path(data_dir)
         self.chunk_size = chunk_size
         self.stride = stride if stride is not None else chunk_size // 2
-        self.normalize = normalize
+        self.multichannel = multichannel
         self.augment = augment
 
         # Preload all data and build chunk index
@@ -101,58 +140,61 @@ class SegmentationDataset(Dataset):
         for sid in study_ids:
             resistance, labels = load_study(self.data_dir, sid)
 
-            # Per-study normalization: z-score
-            if self.normalize:
+            # Build feature channels
+            if self.multichannel:
+                features = build_multichannel(resistance)  # (5, N)
+            else:
                 mean = resistance.mean()
                 std = resistance.std() + 1e-8
-                resistance = (resistance - mean) / std
+                features = ((resistance - mean) / std)[np.newaxis, :]  # (1, N)
 
-            n = len(resistance)
+            n = features.shape[1]
             start = 0
             while start + self.chunk_size <= n:
-                r_chunk = resistance[start : start + self.chunk_size]
+                f_chunk = features[:, start : start + self.chunk_size]
                 l_chunk = labels[start : start + self.chunk_size]
-                self.chunks.append((r_chunk, l_chunk))
+                self.chunks.append((f_chunk, l_chunk))
                 start += self.stride
 
             # Handle tail: pad last chunk if remaining > chunk_size // 4
             remaining = n - start
             if remaining > self.chunk_size // 4:
-                # Pad with last value (resistance) and blood label (0)
-                r_chunk = np.zeros(self.chunk_size, dtype=np.float32)
+                num_ch = features.shape[0]
+                f_chunk = np.zeros((num_ch, self.chunk_size), dtype=np.float32)
                 l_chunk = np.full(self.chunk_size, 0, dtype=np.int64)
-                r_chunk[:remaining] = resistance[start:]
+                f_chunk[:, :remaining] = features[:, start:]
+                f_chunk[:, remaining:] = features[:, -1:]
                 l_chunk[:remaining] = labels[start:]
-                r_chunk[remaining:] = resistance[-1]
-                self.chunks.append((r_chunk, l_chunk))
+                self.chunks.append((f_chunk, l_chunk))
 
     def __len__(self) -> int:
         return len(self.chunks)
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        r_chunk, l_chunk = self.chunks[idx]
+        f_chunk, l_chunk = self.chunks[idx]
 
         if self.augment:
-            r_chunk = self._augment(r_chunk.copy())
+            f_chunk = self._augment(f_chunk.copy())
 
-        x = torch.from_numpy(r_chunk).unsqueeze(0)  # (1, chunk_size)
+        x = torch.from_numpy(f_chunk)  # (num_channels, chunk_size)
         y = torch.from_numpy(l_chunk)  # (chunk_size,)
         return x, y
 
     def _augment(self, x: np.ndarray) -> np.ndarray:
-        """Simple augmentations for training."""
-        # Gaussian noise
+        """Augmentations applied to all channels consistently."""
+        # Gaussian noise (on channel 0 = raw R; propagates naturally)
         if np.random.rand() < 0.5:
-            x += np.random.randn(len(x)).astype(np.float32) * 0.02
+            noise = np.random.randn(x.shape[1]).astype(np.float32) * 0.02
+            x[0] += noise
 
-        # Amplitude scaling
+        # Amplitude scaling (all channels)
         if np.random.rand() < 0.5:
             scale = np.random.uniform(0.9, 1.1)
             x *= scale
 
-        # DC offset shift
+        # DC offset shift (channel 0 only)
         if np.random.rand() < 0.3:
-            x += np.random.uniform(-0.1, 0.1)
+            x[0] += np.random.uniform(-0.1, 0.1)
 
         return x
 
@@ -162,6 +204,7 @@ def create_datasets(
     val_fraction: float = 0.15,
     chunk_size: int = CHUNK_SIZE,
     stride: Optional[int] = None,
+    multichannel: bool = True,
     seed: int = 42,
 ) -> Tuple[SegmentationDataset, SegmentationDataset, List[str], List[str]]:
     """
@@ -178,15 +221,16 @@ def create_datasets(
     train_ids = ids[n_val:]
 
     print(f"Train: {len(train_ids)} studies, Val: {len(val_ids)} studies")
+    print(f"Multichannel: {multichannel} ({'5 channels' if multichannel else '1 channel'})")
 
     train_ds = SegmentationDataset(
         data_dir, train_ids, chunk_size=chunk_size,
-        stride=stride, augment=True,
+        stride=stride, multichannel=multichannel, augment=True,
     )
     val_ds = SegmentationDataset(
         data_dir, val_ids, chunk_size=chunk_size,
         stride=chunk_size,  # no overlap for validation
-        augment=False,
+        multichannel=multichannel, augment=False,
     )
 
     print(f"Train chunks: {len(train_ds)}, Val chunks: {len(val_ds)}")

@@ -16,17 +16,20 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 
-from .dataset import CHUNK_SIZE, NUM_CLASSES
+from .dataset import CHUNK_SIZE, NUM_CHANNELS, NUM_CLASSES, build_multichannel
 from .model import UNet1D
 
 
-def load_model(checkpoint_path: str, device: torch.device) -> UNet1D:
-    """Load trained model from checkpoint."""
+def load_model(checkpoint_path: str, device: torch.device) -> tuple:
+    """Load trained model from checkpoint. Returns (model, multichannel_flag)."""
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     args = ckpt["args"]
 
+    multichannel = args.get("multichannel", False)
+    in_channels = NUM_CHANNELS if multichannel else 1
+
     model = UNet1D(
-        in_channels=1,
+        in_channels=in_channels,
         num_classes=NUM_CLASSES,
         base_filters=args.get("base_filters", 32),
         depth=args.get("depth", 5),
@@ -35,26 +38,26 @@ def load_model(checkpoint_path: str, device: torch.device) -> UNet1D:
 
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
-    return model
+    return model, multichannel
 
 
 @torch.no_grad()
 def predict_file(
     model: UNet1D,
-    resistance: np.ndarray,
+    features: np.ndarray,
     device: torch.device,
     chunk_size: int = CHUNK_SIZE,
     stride: int = None,
     batch_size: int = 32,
 ) -> np.ndarray:
     """
-    Run inference on a full-length resistance signal.
+    Run inference on a full-length signal.
 
     Uses overlapping chunks with softmax averaging for smooth predictions.
 
     Args:
         model: trained U-Net
-        resistance: raw resistance array (float32, already z-normalized)
+        features: (num_channels, N) float32 array — multi-channel or (N,) for single
         device: torch device
         chunk_size: segment length
         stride: overlap stride (default: chunk_size // 2)
@@ -66,7 +69,11 @@ def predict_file(
     if stride is None:
         stride = chunk_size // 2
 
-    n = len(resistance)
+    # Handle both single-channel (N,) and multi-channel (C, N)
+    if features.ndim == 1:
+        features = features[np.newaxis, :]  # (1, N)
+
+    num_ch, n = features.shape
 
     # Accumulate softmax probabilities and counts for averaging
     prob_sum = np.zeros((NUM_CLASSES, n), dtype=np.float64)
@@ -77,17 +84,16 @@ def predict_file(
     starts = []
     pos = 0
     while pos + chunk_size <= n:
-        chunks.append(resistance[pos : pos + chunk_size])
+        chunks.append(features[:, pos : pos + chunk_size])  # (C, chunk_size)
         starts.append(pos)
         pos += stride
 
     # Handle tail
     if pos < n:
-        # Pad last chunk
-        tail = np.zeros(chunk_size, dtype=np.float32)
+        tail = np.zeros((num_ch, chunk_size), dtype=np.float32)
         tail_len = n - pos
-        tail[:tail_len] = resistance[pos:]
-        tail[tail_len:] = resistance[-1]
+        tail[:, :tail_len] = features[:, pos:]
+        tail[:, tail_len:] = features[:, -1:]
         chunks.append(tail)
         starts.append(pos)
 
@@ -97,7 +103,7 @@ def predict_file(
         batch_starts = starts[i : i + batch_size]
 
         x = torch.tensor(np.array(batch_chunks), dtype=torch.float32)
-        x = x.unsqueeze(1).to(device)  # (B, 1, L)
+        x = x.to(device)  # (B, C, L)
 
         logits = model(x)  # (B, C, L)
         probs = F.softmax(logits, dim=1).cpu().numpy()  # (B, C, L)
@@ -173,7 +179,7 @@ def predict_parquet(
 
     print(f"Device: {device}")
     print(f"Loading model from: {checkpoint_path}")
-    model = load_model(checkpoint_path, device)
+    model, multichannel = load_model(checkpoint_path, device)
 
     print(f"Reading: {input_path}")
     df = pd.read_parquet(input_path)
@@ -183,13 +189,16 @@ def predict_parquet(
 
     resistance = df["magRLoadAdjusted"].values.astype(np.float32)
 
-    # Per-file z-score normalization (same as training)
-    mean = resistance.mean()
-    std = resistance.std() + 1e-8
-    resistance_norm = (resistance - mean) / std
+    # Build features matching training
+    if multichannel:
+        features = build_multichannel(resistance)  # (5, N)
+    else:
+        mean = resistance.mean()
+        std = resistance.std() + 1e-8
+        features = ((resistance - mean) / std)[np.newaxis, :]  # (1, N)
 
-    print(f"Predicting {len(resistance):,} samples...")
-    labels = predict_file(model, resistance_norm, device)
+    print(f"Predicting {len(resistance):,} samples ({features.shape[0]} channels)...")
+    labels = predict_file(model, features, device)
 
     # Estimate sampling rate from time column if available
     sampling_rate = 167.0
