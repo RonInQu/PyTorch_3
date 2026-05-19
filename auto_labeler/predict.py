@@ -17,6 +17,7 @@ import torch
 import torch.nn.functional as F
 
 from .dataset import CHUNK_SIZE, NUM_CHANNELS, NUM_CLASSES, build_multichannel
+from .config import MIN_EVENT_DURATION_SEC, SAMPLING_RATE_HZ
 from .model import UNet1D
 
 
@@ -160,7 +161,7 @@ def predict_parquet(
     input_path: str,
     checkpoint_path: str,
     output_path: str = None,
-    min_duration_sec: float = 6.0,
+    min_duration_sec: float = MIN_EVENT_DURATION_SEC,
     device: str = None,
 ):
     """
@@ -202,7 +203,7 @@ def predict_parquet(
     labels = predict_file(model, features, device)
 
     # Estimate sampling rate from time column if available
-    sampling_rate = 167.0
+    sampling_rate = SAMPLING_RATE_HZ
     if "timeInMS" in df.columns:
         dt_ms = df["timeInMS"].diff().median()
         if dt_ms > 0:
@@ -230,7 +231,8 @@ def main():
     parser.add_argument("--input", type=str, required=True, help="Input parquet file")
     parser.add_argument("--checkpoint", type=str, default="auto_labeler/checkpoints/best_model.pt")
     parser.add_argument("--output", type=str, default=None, help="Output parquet path")
-    parser.add_argument("--min_duration", type=float, default=6.0, help="Min event duration (seconds)")
+    parser.add_argument("--min_duration", type=float, default=MIN_EVENT_DURATION_SEC,
+                        help="Min event duration (seconds)")
     parser.add_argument("--device", type=str, default=None, help="cuda or cpu")
     args = parser.parse_args()
 

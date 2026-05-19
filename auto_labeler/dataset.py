@@ -10,6 +10,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from pathlib import Path
+from .config import CHUNK_SIZE, NUM_CHANNELS, NUM_CLASSES, SAMPLING_RATE_HZ
 from typing import List, Tuple, Optional
 from scipy.ndimage import uniform_filter1d
 
@@ -43,9 +44,8 @@ TEST_STUDIES = [
     "WEKE0283",
 ]
 
-NUM_CLASSES = 3
-CHUNK_SIZE = 4096  # ~24.5 seconds at 167 Hz
-NUM_CHANNELS = 5  # multi-channel input
+# Re-exported from config for backward compatibility
+# NUM_CLASSES, CHUNK_SIZE, NUM_CHANNELS imported from .config
 
 
 def load_study(data_dir: Path, study_id: str) -> Tuple[np.ndarray, np.ndarray]:
@@ -84,11 +84,13 @@ def build_multichannel(resistance: np.ndarray) -> np.ndarray:
     # Channel 2: second derivative
     ch2 = np.gradient(ch1).astype(np.float32)
 
-    # Channel 3: 1-second moving average (~167 samples)
-    ch3 = uniform_filter1d(r_norm, size=167).astype(np.float32)
+    # Channel 3: 1-second moving average
+    win_1s = int(SAMPLING_RATE_HZ)  # 150 samples at 150 Hz
+    ch3 = uniform_filter1d(r_norm, size=win_1s).astype(np.float32)
 
-    # Channel 4: detrended (remove 5-second trend, ~833 samples)
-    trend = uniform_filter1d(r_norm, size=833).astype(np.float32)
+    # Channel 4: detrended (remove 5-second trend)
+    win_5s = int(5 * SAMPLING_RATE_HZ)  # 750 samples at 150 Hz
+    trend = uniform_filter1d(r_norm, size=win_5s).astype(np.float32)
     ch4 = (r_norm - trend).astype(np.float32)
 
     return np.stack([ch0, ch1, ch2, ch3, ch4], axis=0)  # (5, N)
