@@ -87,21 +87,25 @@ class UNet1D(nn.Module):
         base_filters: int = 32,
         depth: int = 5,
         kernel_size: int = 7,
+        dropout: float = 0.0,
     ):
         super().__init__()
         self.depth = depth
 
         # Encoder
         self.encoders = nn.ModuleList()
+        self.enc_dropouts = nn.ModuleList()
         ch_in = in_channels
         for i in range(depth):
             ch_out = base_filters * (2 ** i)
             self.encoders.append(EncoderBlock(ch_in, ch_out, kernel_size))
+            self.enc_dropouts.append(nn.Dropout1d(dropout) if dropout > 0 else nn.Identity())
             ch_in = ch_out
 
         # Bottleneck
         bottleneck_ch = base_filters * (2 ** depth)
         self.bottleneck = ConvBlock(ch_in, bottleneck_ch, kernel_size)
+        self.bottleneck_dropout = nn.Dropout1d(dropout) if dropout > 0 else nn.Identity()
 
         # Decoder
         self.decoders = nn.ModuleList()
@@ -118,12 +122,14 @@ class UNet1D(nn.Module):
     def forward(self, x):
         # Encoder path
         skips = []
-        for encoder in self.encoders:
+        for encoder, drop in zip(self.encoders, self.enc_dropouts):
             x, features = encoder(x)
+            x = drop(x)
             skips.append(features)
 
         # Bottleneck
         x = self.bottleneck(x)
+        x = self.bottleneck_dropout(x)
 
         # Decoder path
         for decoder, skip in zip(self.decoders, reversed(skips)):

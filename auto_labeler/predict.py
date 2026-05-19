@@ -34,6 +34,7 @@ def load_model(checkpoint_path: str, device: torch.device) -> tuple:
         base_filters=args.get("base_filters", 32),
         depth=args.get("depth", 5),
         kernel_size=args.get("kernel_size", 7),
+        dropout=args.get("dropout", 0.0),
     ).to(device)
 
     model.load_state_dict(ckpt["model_state_dict"])

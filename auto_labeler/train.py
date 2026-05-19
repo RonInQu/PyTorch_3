@@ -152,6 +152,8 @@ def main():
                         help="Loss function: 'ce' (CrossEntropy) or 'focal' (FocalLoss)")
     parser.add_argument("--focal_gamma", type=float, default=2.0,
                         help="Focal loss gamma parameter")
+    parser.add_argument("--dropout", type=float, default=0.2,
+                        help="Dropout rate for regularization (0=off)")
     args = parser.parse_args()
 
     # Handle channel flag
@@ -197,9 +199,10 @@ def main():
         base_filters=args.base_filters,
         depth=args.depth,
         kernel_size=args.kernel_size,
+        dropout=args.dropout,
     ).to(device)
     print(f"Model parameters: {count_parameters(model):,}")
-    print(f"Input channels: {in_channels}, Loss: {args.loss}")
+    print(f"Input channels: {in_channels}, Loss: {args.loss}, Dropout: {args.dropout}")
 
     # Loss and optimizer
     if args.loss == "focal":
