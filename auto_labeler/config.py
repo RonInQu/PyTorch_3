@@ -16,8 +16,8 @@ CLASS_NAMES = ["blood", "clot", "wall"]
 CHUNK_SIZE = 4096                 # Samples per training chunk (~27.3s at 150 Hz)
 
 # ─── Post-processing ─────────────────────────────────────────────────────────
-MIN_EVENT_DURATION_SEC = 3.0      # Minimum event duration (seconds)
-MIN_EVENT_DURATION_SAMPLES = int(MIN_EVENT_DURATION_SEC * SAMPLING_RATE_HZ)  # = 450
+MIN_EVENT_DURATION_SEC = 1.0      # Minimum event duration (seconds)
+MIN_EVENT_DURATION_SAMPLES = int(MIN_EVENT_DURATION_SEC * SAMPLING_RATE_HZ)  # = 150
 
 # ─── Multi-channel input ─────────────────────────────────────────────────────
 NUM_CHANNELS = 5                  # Channels: [z-norm R, dR/dt, d²R/dt², 1s avg, detrended]
