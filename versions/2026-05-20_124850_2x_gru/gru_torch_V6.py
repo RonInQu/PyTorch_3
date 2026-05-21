@@ -585,35 +585,69 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ────────────────────────────────────────────────
 # ClotGRU Model
 # ────────────────────────────────────────────────
+# class ClotGRU(nn.Module):
+#     def __init__(self, input_size=None, hidden_size=32, output_size=3):
+#         super().__init__()
+#         if input_size is None:
+#             input_size = active_dim
+
+#         self.gru = nn.GRU(input_size, hidden_size, batch_first=True)
+
+#         nn.init.orthogonal_(self.gru.weight_ih_l0)
+#         nn.init.orthogonal_(self.gru.weight_hh_l0)
+#         nn.init.zeros_(self.gru.bias_ih_l0)
+#         nn.init.zeros_(self.gru.bias_hh_l0)
+
+#         self.fc1 = nn.Linear(hidden_size, 24)
+#         self.fc2 = nn.Linear(24, output_size)
+
+#         nn.init.kaiming_uniform_(self.fc1.weight, nonlinearity='relu')
+#         nn.init.zeros_(self.fc1.bias)
+#         nn.init.xavier_uniform_(self.fc2.weight)
+#         nn.init.zeros_(self.fc2.bias)
+
+#     def forward(self, x, hidden=None):
+#         out, hidden = self.gru(x, hidden)
+#         out = out[:, -1]
+#         out = torch.relu(self.fc1(out))
+#         logits = self.fc2(out)
+#         return logits, hidden
+
 class ClotGRU(nn.Module):
-    def __init__(self, input_size=None, hidden_size=32, output_size=3):
+    def __init__(self, input_size=None, hidden1=32, hidden2=24, output_size=3):
         super().__init__()
         if input_size is None:
             input_size = active_dim
 
-        self.gru = nn.GRU(input_size, hidden_size, batch_first=True)
+        self.gru1 = nn.GRU(input_size, hidden1, batch_first=True)
+        self.gru2 = nn.GRU(hidden1, hidden2, batch_first=True)
+        self.fc = nn.Linear(hidden2, output_size)
 
-        nn.init.orthogonal_(self.gru.weight_ih_l0)
-        nn.init.orthogonal_(self.gru.weight_hh_l0)
-        nn.init.zeros_(self.gru.bias_ih_l0)
-        nn.init.zeros_(self.gru.bias_hh_l0)
+        # Init GRU1
+        nn.init.orthogonal_(self.gru1.weight_ih_l0)
+        nn.init.orthogonal_(self.gru1.weight_hh_l0)
+        nn.init.zeros_(self.gru1.bias_ih_l0)
+        nn.init.zeros_(self.gru1.bias_hh_l0)
 
-        self.fc1 = nn.Linear(hidden_size, 24)
-        self.fc2 = nn.Linear(24, output_size)
+        # Init GRU2
+        nn.init.orthogonal_(self.gru2.weight_ih_l0)
+        nn.init.orthogonal_(self.gru2.weight_hh_l0)
+        nn.init.zeros_(self.gru2.bias_ih_l0)
+        nn.init.zeros_(self.gru2.bias_hh_l0)
 
-        nn.init.kaiming_uniform_(self.fc1.weight, nonlinearity='relu')
-        nn.init.zeros_(self.fc1.bias)
-        nn.init.xavier_uniform_(self.fc2.weight)
-        nn.init.zeros_(self.fc2.bias)
+        # Init FC
+        nn.init.xavier_uniform_(self.fc.weight)
+        nn.init.zeros_(self.fc.bias)
 
     def forward(self, x, hidden=None):
-        out, hidden = self.gru(x, hidden)
-        out = out[:, -1]
-        out = torch.relu(self.fc1(out))
-        logits = self.fc2(out)
-        return logits, hidden
+        # hidden is a tuple (h1, h2) or None
+        h1 = hidden[0] if hidden is not None else None
+        h2 = hidden[1] if hidden is not None else None
 
-
+        out, h1 = self.gru1(x, h1)    # (B, SEQ_LEN, hidden1)
+        out, h2 = self.gru2(out, h2)   # (B, SEQ_LEN, hidden2)
+        logits = self.fc(out[:, -1])    # last step → (B, output_size)
+        return logits, (h1, h2)
     
 # ────────────────────────────────────────────────
 # LiveClotDetector

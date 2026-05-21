@@ -37,7 +37,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 #     FEATURE_SET, SEQ_LEN, WINDOW_SEC, \
 #     active_idx, active_dim, dim_str
     
-from src.models.gru_torch_V6 import ClotFeatureExtractor, ClotGRU, \
+from src.models.gru_torch_2x_V6 import ClotFeatureExtractor, ClotGRU, \
     FEATURE_SET, SEQ_LEN, WINDOW_SEC, \
     active_idx, active_dim, dim_str    
 

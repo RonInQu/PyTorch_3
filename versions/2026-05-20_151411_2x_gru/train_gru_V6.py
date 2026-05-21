@@ -37,7 +37,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 #     FEATURE_SET, SEQ_LEN, WINDOW_SEC, \
 #     active_idx, active_dim, dim_str
     
-from src.models.gru_torch_V6 import ClotFeatureExtractor, ClotGRU, \
+from src.models.gru_torch_2x_V6 import ClotFeatureExtractor, ClotGRU, \
     FEATURE_SET, SEQ_LEN, WINDOW_SEC, \
     active_idx, active_dim, dim_str    
 
@@ -54,7 +54,6 @@ N_EPOCHS = 100
 PATIENCE = 15
 LR = 0.0001
 WEIGHT_DECAY = 1e-4
-SMOOTHING_FACTOR = 0.0
 
 # Loss function: "cross_entropy" or "focal"
 LOSS_FN = "cross_entropy"   # Set to "focal" to use focal loss
@@ -331,9 +330,7 @@ def train_fold(model, train_loader, val_loader, class_weights):
         criterion = FocalLoss(weight=class_weights.to(DEVICE), gamma=FOCAL_GAMMA)
         print(f"  Using Focal Loss (gamma={FOCAL_GAMMA})")
     else:
-        criterion = nn.CrossEntropyLoss(
-            weight=class_weights.to(DEVICE),
-            label_smoothing=SMOOTHING_FACTOR)
+        criterion = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE))
 
     best_f1 = 0
     best_state = None
