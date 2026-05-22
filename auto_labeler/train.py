@@ -1,12 +1,15 @@
 """
 Training script for the 1D U-Net auto-labeler.
 
+ALL parameters are read from config.py — no CLI overrides.
+
 Usage:
-    python -m auto_labeler.train --data_dir training_data --epochs 80
+    python -m auto_labeler.train --data_dir training_data --output_dir checkpoints
 """
 
 import argparse
 import time
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -14,12 +17,9 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+from . import config as cfg
 from .dataset import (
-    CHUNK_SIZE,
-    NUM_CHANNELS,
-    NUM_CLASSES,
     TRAINING_STUDIES,
-    SegmentationDataset,
     compute_class_weights,
     create_datasets,
 )
@@ -27,29 +27,23 @@ from .model import UNet1D, count_parameters
 
 
 class FocalLoss(nn.Module):
-    """
-    Focal Loss for imbalanced segmentation.
-    Down-weights easy examples, focuses on hard ones (e.g., clot boundaries).
-
-    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
-    """
+    """Focal Loss for imbalanced segmentation."""
 
     def __init__(self, alpha: torch.Tensor = None, gamma: float = 2.0):
         super().__init__()
         self.gamma = gamma
-        self.register_buffer("alpha", alpha)  # class weights
+        self.register_buffer("alpha", alpha)
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        # logits: (B, C, L), targets: (B, L)
         ce_loss = nn.functional.cross_entropy(
             logits, targets, weight=self.alpha, reduction="none"
-        )  # (B, L)
-        pt = torch.exp(-ce_loss)  # probability of correct class
+        )
+        pt = torch.exp(-ce_loss)
         focal_loss = ((1 - pt) ** self.gamma) * ce_loss
         return focal_loss.mean()
 
 
-def compute_metrics(preds: torch.Tensor, labels: torch.Tensor, num_classes: int = NUM_CLASSES):
+def compute_metrics(preds: torch.Tensor, labels: torch.Tensor, num_classes: int = cfg.NUM_CLASSES):
     """Compute per-class F1, overall accuracy, and IoU."""
     pred_flat = preds.argmax(dim=1).view(-1)
     label_flat = labels.view(-1)
@@ -91,7 +85,7 @@ def train_one_epoch(model, loader, criterion, optimizer, scheduler, device):
         logits = model(x)  # (B, C, L)
         loss = criterion(logits, y)
         loss.backward()
-        nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.GRAD_CLIP_NORM)
         optimizer.step()
         scheduler.step()
 
@@ -129,39 +123,19 @@ def validate(model, loader, criterion, device):
 
 def main():
     parser = argparse.ArgumentParser(description="Train 1D U-Net auto-labeler")
-    parser.add_argument("--data_dir", type=str, default="training_data")
-    parser.add_argument("--output_dir", type=str, default="auto_labeler/checkpoints")
-    parser.add_argument("--epochs", type=int, default=80)
-    parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--weight_decay", type=float, default=1e-4)
-    parser.add_argument("--chunk_size", type=int, default=CHUNK_SIZE)
-    parser.add_argument("--stride", type=int, default=None)
-    parser.add_argument("--base_filters", type=int, default=32)
-    parser.add_argument("--depth", type=int, default=5)
-    parser.add_argument("--kernel_size", type=int, default=7)
-    parser.add_argument("--val_fraction", type=float, default=0.15)
-    parser.add_argument("--patience", type=int, default=15)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--num_workers", type=int, default=0)
-    parser.add_argument("--multichannel", action="store_true", default=True,
-                        help="Use 5-channel input (default: True)")
-    parser.add_argument("--single_channel", action="store_true",
-                        help="Use single-channel raw R input")
-    parser.add_argument("--loss", type=str, default="focal", choices=["ce", "focal"],
-                        help="Loss function: 'ce' (CrossEntropy) or 'focal' (FocalLoss)")
-    parser.add_argument("--focal_gamma", type=float, default=2.0,
-                        help="Focal loss gamma parameter")
-    parser.add_argument("--dropout", type=float, default=0.2,
-                        help="Dropout rate for regularization (0=off)")
+    parser.add_argument("--data_dir", type=str, default="training_data",
+                        help="Path to training parquet files")
+    parser.add_argument("--output_dir", type=str, default="auto_labeler/checkpoints",
+                        help="Path to save checkpoints and manifest")
     args = parser.parse_args()
 
-    # Handle channel flag
-    if args.single_channel:
-        args.multichannel = False
+    # ─── All parameters from config.py ────────────────────────────────────
+    multichannel = cfg.NUM_CHANNELS > 1
+    in_channels = cfg.NUM_CHANNELS
+    stride = cfg.TRAIN_STRIDE if cfg.TRAIN_STRIDE else cfg.CHUNK_SIZE // 2
 
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
+    torch.manual_seed(cfg.SEED)
+    np.random.seed(cfg.SEED)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
@@ -170,20 +144,20 @@ def main():
     print("Loading data...")
     train_ds, val_ds, train_ids, val_ids = create_datasets(
         data_dir=args.data_dir,
-        val_fraction=args.val_fraction,
-        chunk_size=args.chunk_size,
-        stride=args.stride,
-        multichannel=args.multichannel,
-        seed=args.seed,
+        val_fraction=cfg.VAL_FRACTION,
+        chunk_size=cfg.CHUNK_SIZE,
+        stride=stride,
+        multichannel=multichannel,
+        seed=cfg.SEED,
     )
 
     train_loader = DataLoader(
-        train_ds, batch_size=args.batch_size, shuffle=True,
-        num_workers=args.num_workers, pin_memory=(device.type == "cuda"),
+        train_ds, batch_size=cfg.BATCH_SIZE, shuffle=True,
+        num_workers=cfg.NUM_WORKERS, pin_memory=(device.type == "cuda"),
     )
     val_loader = DataLoader(
-        val_ds, batch_size=args.batch_size, shuffle=False,
-        num_workers=args.num_workers, pin_memory=(device.type == "cuda"),
+        val_ds, batch_size=cfg.BATCH_SIZE, shuffle=False,
+        num_workers=cfg.NUM_WORKERS, pin_memory=(device.type == "cuda"),
     )
 
     # Class weights
@@ -192,28 +166,27 @@ def main():
     print(f"Class weights: {class_weights.tolist()}")
 
     # Model
-    in_channels = NUM_CHANNELS if args.multichannel else 1
     model = UNet1D(
         in_channels=in_channels,
-        num_classes=NUM_CLASSES,
-        base_filters=args.base_filters,
-        depth=args.depth,
-        kernel_size=args.kernel_size,
-        dropout=args.dropout,
+        num_classes=cfg.NUM_CLASSES,
+        base_filters=cfg.BASE_FILTERS,
+        depth=cfg.DEPTH,
+        kernel_size=cfg.KERNEL_SIZE,
+        dropout=cfg.DROPOUT,
     ).to(device)
     print(f"Model parameters: {count_parameters(model):,}")
-    print(f"Input channels: {in_channels}, Loss: {args.loss}, Dropout: {args.dropout}")
+    print(f"Input channels: {in_channels}, Loss: {cfg.LOSS_FUNCTION}, Dropout: {cfg.DROPOUT}")
 
     # Loss and optimizer
-    if args.loss == "focal":
-        criterion = FocalLoss(alpha=class_weights, gamma=args.focal_gamma)
+    if cfg.LOSS_FUNCTION == "focal":
+        criterion = FocalLoss(alpha=class_weights, gamma=cfg.FOCAL_GAMMA)
     else:
         criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+        model.parameters(), lr=cfg.LEARNING_RATE, weight_decay=cfg.WEIGHT_DECAY
     )
     scheduler = torch.optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=args.lr, epochs=args.epochs,
+        optimizer, max_lr=cfg.LEARNING_RATE, epochs=cfg.EPOCHS,
         steps_per_epoch=len(train_loader),
     )
 
@@ -223,14 +196,17 @@ def main():
 
     # Training loop
     best_f1 = 0.0
+    best_epoch = 0
+    best_metrics = {}
     patience_counter = 0
     history = []
+    start_time = time.time()
 
     print(f"\n{'='*60}")
-    print(f"Training: {args.epochs} epochs, patience={args.patience}")
+    print(f"Training: {cfg.EPOCHS} epochs, patience={cfg.PATIENCE}")
     print(f"{'='*60}\n")
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, cfg.EPOCHS + 1):
         t0 = time.time()
         train_loss = train_one_epoch(model, train_loader, criterion, optimizer, scheduler, device)
 
@@ -247,7 +223,7 @@ def main():
 
         f1_str = "/".join(f"{f:.3f}" for f in val_metrics["f1_per_class"])
         print(
-            f"Epoch {epoch:3d}/{args.epochs} | "
+            f"Epoch {epoch:3d}/{cfg.EPOCHS} | "
             f"Train Loss: {train_loss:.4f} | "
             f"Val Loss: {val_metrics['loss']:.4f} | "
             f"Val F1: {val_metrics['f1_macro']:.4f} ({f1_str}) | "
@@ -258,35 +234,119 @@ def main():
         # Early stopping on val F1 macro
         if val_metrics["f1_macro"] > best_f1:
             best_f1 = val_metrics["f1_macro"]
+            best_epoch = epoch
+            best_metrics = val_metrics
             patience_counter = 0
             torch.save({
                 "epoch": epoch,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "val_metrics": val_metrics,
-                "args": vars(args),
+                "config": {k: v for k, v in vars(cfg).items() if k.isupper()},
                 "train_ids": train_ids,
                 "val_ids": val_ids,
             }, output_dir / "best_model.pt")
             print(f"  → Saved best model (F1={best_f1:.4f})")
         else:
             patience_counter += 1
-            if patience_counter >= args.patience:
-                print(f"\nEarly stopping at epoch {epoch} (patience={args.patience})")
+            if patience_counter >= cfg.PATIENCE:
+                print(f"\nEarly stopping at epoch {epoch} (patience={cfg.PATIENCE})")
                 break
+
+    total_time = time.time() - start_time
 
     # Save final model
     torch.save({
         "epoch": epoch,
         "model_state_dict": model.state_dict(),
         "val_metrics": val_metrics,
-        "args": vars(args),
+        "config": {k: v for k, v in vars(cfg).items() if k.isupper()},
         "history": history,
     }, output_dir / "final_model.pt")
 
+    # ─── Write manifest.txt ───────────────────────────────────────────────
+    manifest_path = output_dir / "manifest.txt"
+    with open(manifest_path, "w") as f:
+        f.write("=" * 60 + "\n")
+        f.write("AUTO-LABELER TRAINING MANIFEST\n")
+        f.write("=" * 60 + "\n\n")
+
+        f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Data directory: {args.data_dir}\n")
+        f.write(f"Output directory: {args.output_dir}\n")
+        f.write(f"Device: {device}\n")
+        if device.type == "cuda":
+            f.write(f"GPU: {torch.cuda.get_device_name(0)}\n")
+        f.write("\n")
+
+        f.write("-" * 60 + "\n")
+        f.write("PARAMETERS (from config.py)\n")
+        f.write("-" * 60 + "\n")
+        f.write(f"  SAMPLING_RATE_HZ      = {cfg.SAMPLING_RATE_HZ}\n")
+        f.write(f"  NUM_CLASSES           = {cfg.NUM_CLASSES}\n")
+        f.write(f"  NUM_CHANNELS          = {cfg.NUM_CHANNELS}\n")
+        f.write(f"  CHUNK_SIZE            = {cfg.CHUNK_SIZE}\n")
+        f.write(f"  BASE_FILTERS          = {cfg.BASE_FILTERS}\n")
+        f.write(f"  DEPTH                 = {cfg.DEPTH}\n")
+        f.write(f"  KERNEL_SIZE           = {cfg.KERNEL_SIZE}\n")
+        f.write(f"  DROPOUT               = {cfg.DROPOUT}\n")
+        f.write(f"  EPOCHS                = {cfg.EPOCHS}\n")
+        f.write(f"  BATCH_SIZE            = {cfg.BATCH_SIZE}\n")
+        f.write(f"  LEARNING_RATE         = {cfg.LEARNING_RATE}\n")
+        f.write(f"  WEIGHT_DECAY          = {cfg.WEIGHT_DECAY}\n")
+        f.write(f"  LOSS_FUNCTION         = {cfg.LOSS_FUNCTION}\n")
+        f.write(f"  FOCAL_GAMMA           = {cfg.FOCAL_GAMMA}\n")
+        f.write(f"  PATIENCE              = {cfg.PATIENCE}\n")
+        f.write(f"  VAL_FRACTION          = {cfg.VAL_FRACTION}\n")
+        f.write(f"  SEED                  = {cfg.SEED}\n")
+        f.write(f"  NUM_WORKERS           = {cfg.NUM_WORKERS}\n")
+        f.write(f"  GRAD_CLIP_NORM        = {cfg.GRAD_CLIP_NORM}\n")
+        f.write(f"  TRAIN_STRIDE          = {stride}\n")
+        f.write(f"  AUGMENT_NOISE_STD     = {cfg.AUGMENT_NOISE_STD}\n")
+        f.write(f"  AUGMENT_SCALE_RANGE   = {cfg.AUGMENT_SCALE_RANGE}\n")
+        f.write(f"  AUGMENT_OFFSET_RANGE  = {cfg.AUGMENT_OFFSET_RANGE}\n")
+        f.write(f"  MIN_EVENT_DURATION_SEC= {cfg.MIN_EVENT_DURATION_SEC}\n")
+        f.write("\n")
+
+        f.write("-" * 60 + "\n")
+        f.write(f"TRAINING FILES ({len(train_ids)} studies)\n")
+        f.write("-" * 60 + "\n")
+        for sid in sorted(train_ids):
+            f.write(f"  {sid}\n")
+        f.write("\n")
+
+        f.write("-" * 60 + "\n")
+        f.write(f"VALIDATION FILES ({len(val_ids)} studies)\n")
+        f.write("-" * 60 + "\n")
+        for sid in sorted(val_ids):
+            f.write(f"  {sid}\n")
+        f.write("\n")
+
+        f.write("-" * 60 + "\n")
+        f.write("TRAINING SUMMARY\n")
+        f.write("-" * 60 + "\n")
+        f.write(f"  Model parameters      = {count_parameters(model):,}\n")
+        f.write(f"  Class weights         = {class_weights.tolist()}\n")
+        f.write(f"  Training chunks       = {len(train_ds):,}\n")
+        f.write(f"  Validation chunks     = {len(val_ds):,}\n")
+        f.write(f"  Total training time   = {total_time:.1f}s ({total_time/60:.1f} min)\n")
+        f.write(f"  Epochs completed      = {epoch}\n")
+        f.write(f"  Best epoch            = {best_epoch}\n")
+        f.write(f"  Best val F1 macro     = {best_f1:.4f}\n")
+        f.write(f"  Best val accuracy     = {best_metrics.get('accuracy', 0):.4f}\n")
+        f.write(f"  Best val F1 per class:\n")
+        for i, name in enumerate(cfg.CLASS_NAMES):
+            f1_val = best_metrics.get("f1_per_class", [0, 0, 0])[i]
+            f.write(f"    {name:10s} = {f1_val:.4f}\n")
+        f.write(f"  Final train loss      = {history[-1]['train_loss']:.4f}\n")
+        f.write(f"  Final val loss        = {history[-1]['val_loss']:.4f}\n")
+        f.write("\n" + "=" * 60 + "\n")
+
     print(f"\n{'='*60}")
-    print(f"Training complete. Best val F1: {best_f1:.4f}")
+    print(f"Training complete. Best val F1: {best_f1:.4f} (epoch {best_epoch})")
     print(f"Checkpoints saved to: {output_dir}")
+    print(f"Manifest saved to: {manifest_path}")
+    print(f"Total time: {total_time:.1f}s ({total_time/60:.1f} min)")
     print(f"{'='*60}")
 
 

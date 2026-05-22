@@ -17,25 +17,47 @@ import torch
 import torch.nn.functional as F
 
 from .dataset import CHUNK_SIZE, NUM_CHANNELS, NUM_CLASSES, build_multichannel
-from .config import MIN_EVENT_DURATION_SEC, SAMPLING_RATE_HZ
+from . import config as cfg
 from .model import UNet1D
 
 
 def load_model(checkpoint_path: str, device: torch.device) -> tuple:
     """Load trained model from checkpoint. Returns (model, multichannel_flag)."""
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    args = ckpt["args"]
 
-    multichannel = args.get("multichannel", False)
-    in_channels = NUM_CHANNELS if multichannel else 1
+    # Support both new format (ckpt["config"]) and legacy (ckpt["args"])
+    if "config" in ckpt:
+        c = ckpt["config"]
+        in_channels = c.get("NUM_CHANNELS", cfg.NUM_CHANNELS)
+        multichannel = in_channels > 1
+        base_filters = c.get("BASE_FILTERS", cfg.BASE_FILTERS)
+        depth = c.get("DEPTH", cfg.DEPTH)
+        kernel_size = c.get("KERNEL_SIZE", cfg.KERNEL_SIZE)
+        dropout = c.get("DROPOUT", cfg.DROPOUT)
+    elif "args" in ckpt:
+        args = ckpt["args"]
+        multichannel = args.get("multichannel", False)
+        in_channels = NUM_CHANNELS if multichannel else 1
+        base_filters = args.get("base_filters", cfg.BASE_FILTERS)
+        depth = args.get("depth", cfg.DEPTH)
+        kernel_size = args.get("kernel_size", cfg.KERNEL_SIZE)
+        dropout = args.get("dropout", cfg.DROPOUT)
+    else:
+        # Fallback to config.py defaults
+        in_channels = cfg.NUM_CHANNELS
+        multichannel = in_channels > 1
+        base_filters = cfg.BASE_FILTERS
+        depth = cfg.DEPTH
+        kernel_size = cfg.KERNEL_SIZE
+        dropout = cfg.DROPOUT
 
     model = UNet1D(
         in_channels=in_channels,
-        num_classes=NUM_CLASSES,
-        base_filters=args.get("base_filters", 32),
-        depth=args.get("depth", 5),
-        kernel_size=args.get("kernel_size", 7),
-        dropout=args.get("dropout", 0.0),
+        num_classes=cfg.NUM_CLASSES,
+        base_filters=base_filters,
+        depth=depth,
+        kernel_size=kernel_size,
+        dropout=dropout,
     ).to(device)
 
     model.load_state_dict(ckpt["model_state_dict"])
@@ -126,8 +148,7 @@ def predict_file(
 
 def postprocess_labels(
     labels: np.ndarray,
-    min_duration_samples: int = 1000,  # ~6 seconds at 167 Hz
-    sampling_rate_hz: float = 167.0,
+    min_duration_samples: int = None,
 ) -> np.ndarray:
     """
     Post-processing: remove short spurious segments.
@@ -135,6 +156,9 @@ def postprocess_labels(
     Any contiguous segment of clot or wall shorter than min_duration_samples
     is replaced with the surrounding label (blood by default).
     """
+    if min_duration_samples is None:
+        min_duration_samples = cfg.MIN_EVENT_DURATION_SAMPLES
+
     result = labels.copy()
     n = len(result)
     i = 0
@@ -161,7 +185,7 @@ def predict_parquet(
     input_path: str,
     checkpoint_path: str,
     output_path: str = None,
-    min_duration_sec: float = MIN_EVENT_DURATION_SEC,
+    min_duration_sec: float = None,
     device: str = None,
 ):
     """
@@ -171,9 +195,12 @@ def predict_parquet(
         input_path: path to input parquet (must have 'magRLoadAdjusted' column)
         checkpoint_path: path to trained model checkpoint
         output_path: where to save output parquet (default: input_labeled.parquet)
-        min_duration_sec: minimum event duration for post-processing
+        min_duration_sec: minimum event duration for post-processing (default: from config)
         device: 'cuda' or 'cpu' (auto-detected if None)
     """
+    if min_duration_sec is None:
+        min_duration_sec = cfg.MIN_EVENT_DURATION_SEC
+
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
@@ -203,7 +230,7 @@ def predict_parquet(
     labels = predict_file(model, features, device)
 
     # Estimate sampling rate from time column if available
-    sampling_rate = SAMPLING_RATE_HZ
+    sampling_rate = cfg.SAMPLING_RATE_HZ
     if "timeInMS" in df.columns:
         dt_ms = df["timeInMS"].diff().median()
         if dt_ms > 0:

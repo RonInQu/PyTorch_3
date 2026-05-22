@@ -18,19 +18,21 @@ import torch
 import matplotlib.pyplot as plt
 
 from .dataset import CHUNK_SIZE, NUM_CLASSES, TEST_STUDIES, build_multichannel, load_study
-from .config import MIN_EVENT_DURATION_SEC, MIN_EVENT_DURATION_SAMPLES, SAMPLING_RATE_HZ, SAMPLE_DT_SEC
+from . import config as cfg
 from .predict import load_model, postprocess_labels, predict_file
 
 
-CLASS_NAMES = ["blood", "clot", "wall"]
+CLASS_NAMES = cfg.CLASS_NAMES
 CLASS_COLORS = ["black", "red", "blue"]
 
 
 def evaluate_study(
     model, data_dir: Path, study_id: str, device: torch.device,
-    min_duration_samples: int = MIN_EVENT_DURATION_SAMPLES, multichannel: bool = True,
+    min_duration_samples: int = None, multichannel: bool = True,
 ) -> dict:
     """Evaluate a single study: predict and compare to GT labels."""
+    if min_duration_samples is None:
+        min_duration_samples = cfg.MIN_EVENT_DURATION_SAMPLES
     resistance, gt_labels = load_study(data_dir, study_id)
 
     # Build features matching training
@@ -70,10 +72,12 @@ def evaluate_study(
 
 def plot_overlay(
     data_dir: Path, study_id: str, model, device: torch.device,
-    output_dir: Path, min_duration_samples: int = MIN_EVENT_DURATION_SAMPLES,
+    output_dir: Path, min_duration_samples: int = None,
     multichannel: bool = True, time_range: tuple = None,
 ):
     """Generate overlay plot: resistance + GT labels + predicted labels."""
+    if min_duration_samples is None:
+        min_duration_samples = cfg.MIN_EVENT_DURATION_SAMPLES
     resistance, gt_labels = load_study(data_dir, study_id)
 
     if multichannel:
@@ -87,7 +91,7 @@ def plot_overlay(
     pred_labels = postprocess_labels(pred_labels, min_duration_samples=min_duration_samples)
 
     # Time axis
-    dt = SAMPLE_DT_SEC
+    dt = cfg.SAMPLE_DT_SEC
     time_sec = np.arange(len(resistance)) * dt
 
     if time_range:
@@ -142,7 +146,7 @@ def main():
     parser.add_argument("--checkpoint", type=str, default="auto_labeler/checkpoints/best_model.pt")
     parser.add_argument("--output_dir", type=str, default="auto_labeler/results")
     parser.add_argument("--studies", nargs="*", default=None, help="Study IDs to evaluate (default: test set)")
-    parser.add_argument("--min_duration", type=float, default=MIN_EVENT_DURATION_SEC)
+    parser.add_argument("--min_duration", type=float, default=cfg.MIN_EVENT_DURATION_SEC)
     parser.add_argument("--plot", action="store_true", help="Generate overlay plots")
     parser.add_argument("--device", type=str, default=None)
     args = parser.parse_args()
@@ -167,7 +171,7 @@ def main():
     print(f"Evaluating {len(available)} studies...")
 
     # Sampling rate
-    sampling_rate = SAMPLING_RATE_HZ
+    sampling_rate = cfg.SAMPLING_RATE_HZ
     min_samples = int(args.min_duration * sampling_rate)
 
     results = []

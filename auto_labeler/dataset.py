@@ -11,6 +11,7 @@ import torch
 from torch.utils.data import Dataset
 from pathlib import Path
 from .config import CHUNK_SIZE, NUM_CHANNELS, NUM_CLASSES, SAMPLING_RATE_HZ
+from . import config as cfg
 from typing import List, Tuple, Optional
 from scipy.ndimage import uniform_filter1d
 
@@ -186,17 +187,17 @@ class SegmentationDataset(Dataset):
         """Augmentations applied to all channels consistently."""
         # Gaussian noise (on channel 0 = raw R; propagates naturally)
         if np.random.rand() < 0.5:
-            noise = np.random.randn(x.shape[1]).astype(np.float32) * 0.02
+            noise = np.random.randn(x.shape[1]).astype(np.float32) * cfg.AUGMENT_NOISE_STD
             x[0] += noise
 
         # Amplitude scaling (all channels)
         if np.random.rand() < 0.5:
-            scale = np.random.uniform(0.9, 1.1)
+            scale = np.random.uniform(*cfg.AUGMENT_SCALE_RANGE)
             x *= scale
 
         # DC offset shift (channel 0 only)
         if np.random.rand() < 0.3:
-            x[0] += np.random.uniform(-0.1, 0.1)
+            x[0] += np.random.uniform(*cfg.AUGMENT_OFFSET_RANGE)
 
         return x
 
