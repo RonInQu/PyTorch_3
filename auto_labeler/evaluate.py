@@ -103,9 +103,10 @@ def plot_overlay(
     fig, axes = plt.subplots(3, 1, figsize=(16, 8), sharex=True)
 
     # Top: resistance
+    min_dur_sec = min_duration_samples / cfg.SAMPLING_RATE_HZ
     axes[0].plot(time_sec[idx], resistance[idx], "k-", linewidth=0.3, alpha=0.7)
     axes[0].set_ylabel("R (Ω)")
-    axes[0].set_title(f"{study_id} — Resistance")
+    axes[0].set_title(f"{study_id} — Resistance  |  MIN_EVENT_DURATION = {min_dur_sec:.1f}s")
 
     # Middle: ground truth
     for c in range(NUM_CLASSES):
