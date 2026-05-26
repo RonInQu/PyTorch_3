@@ -202,6 +202,17 @@ class SegmentationDataset(Dataset):
         return x
 
 
+def discover_studies(data_dir: str) -> List[str]:
+    """Discover all study IDs from parquet files in a directory.
+
+    Looks for files matching *_labeled_segment.parquet and extracts the study ID prefix.
+    """
+    data_path = Path(data_dir)
+    parquets = sorted(data_path.glob("*_labeled_segment.parquet"))
+    ids = [p.stem.replace("_labeled_segment", "") for p in parquets]
+    return ids
+
+
 def create_datasets(
     data_dir: str,
     val_fraction: float = 0.15,
@@ -213,10 +224,15 @@ def create_datasets(
     """
     Create train and validation datasets with study-level split.
 
+    Discovers all *_labeled_segment.parquet files in data_dir automatically.
+
     Returns: (train_dataset, val_dataset, train_ids, val_ids)
     """
     rng = np.random.default_rng(seed)
-    ids = TRAINING_STUDIES.copy()
+    ids = discover_studies(data_dir)
+    if not ids:
+        raise FileNotFoundError(
+            f"No *_labeled_segment.parquet files found in {data_dir}")
     rng.shuffle(ids)
 
     n_val = max(1, int(len(ids) * val_fraction))

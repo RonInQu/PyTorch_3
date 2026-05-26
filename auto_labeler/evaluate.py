@@ -17,7 +17,7 @@ import pandas as pd
 import torch
 import matplotlib.pyplot as plt
 
-from .dataset import CHUNK_SIZE, NUM_CLASSES, TEST_STUDIES, build_multichannel, load_study
+from .dataset import CHUNK_SIZE, NUM_CLASSES, TEST_STUDIES, build_multichannel, load_study, discover_studies
 from . import config as cfg
 from .predict import load_model, postprocess_labels, predict_file
 
@@ -143,7 +143,7 @@ def plot_overlay(
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate auto-labeler on studies with GT labels")
-    parser.add_argument("--data_dir", type=str, default="training_data")
+    parser.add_argument("--data_dir", type=str, default="auto_labeler/test_data")
     parser.add_argument("--checkpoint", type=str, default="auto_labeler/checkpoints/best_model.pt")
     parser.add_argument("--output_dir", type=str, default="auto_labeler/results")
     parser.add_argument("--studies", nargs="*", default=None, help="Study IDs to evaluate (default: test set)")
@@ -161,7 +161,14 @@ def main():
     output_dir = Path(args.output_dir)
 
     # Determine which studies to evaluate
-    study_ids = args.studies if args.studies else TEST_STUDIES
+    if args.studies:
+        study_ids = args.studies
+    else:
+        # Auto-discover all studies in data_dir
+        study_ids = discover_studies(args.data_dir)
+        if not study_ids:
+            # Fallback to hardcoded list
+            study_ids = TEST_STUDIES
 
     # Check which studies actually exist in data_dir
     available = [sid for sid in study_ids if (data_dir / f"{sid}_labeled_segment.parquet").exists()]
