@@ -46,7 +46,7 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 # ────────────────────────────────────────────────
 # CONFIG — Single source of truth
 # ────────────────────────────────────────────────
-SEQ_LEN = 8
+SEQ_LEN = 1
 
 WINDOW_SEC = 5.0
 REPORT_INTERVAL_MS = 200
@@ -127,8 +127,6 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent
 
 FEATURE_SETS = {
     "all":               list(range(TOTAL_FEATURES)),
-    "check_1":           [0, 1, 2, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 26, 27, 36, 37, 38, 39],
-    "check_2":           [i for i in range(40) if i not in [3,6,7,14,15,19,22,23,25,30,31,32,36,38]],
     "original_40":       list(range(40)),
     "clean_36":          [i for i in range(40) if i not in [14, 25, 31, 33]],
     "top20":             [4, 0, 1, 9, 23, 3, 21, 19, 30, 32, 15, 36, 27, 24, 16, 12, 8, 34, 20, 10],
