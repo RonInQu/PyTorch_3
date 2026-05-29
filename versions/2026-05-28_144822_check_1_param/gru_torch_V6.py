@@ -84,8 +84,8 @@ INIT_CLOT_PROB  = (1 - INIT_BLOOD_PROB) /2
 INIT_WALL_PROB  = (1 - INIT_BLOOD_PROB) /2
 
 # Feature set selection
-FEATURE_SET = "clot_wall_focused"
-#FEATURE_SET = "top20"
+# FEATURE_SET = "clot_wall_focused"
+FEATURE_SET = "check_1"
 
 TOTAL_FEATURES = 65
 
@@ -136,7 +136,6 @@ FEATURE_SETS = {
     # d(clt-wall) > 0.15 — clot vs wall distinguishing features + pulse
     "clot_wall_focused": [39, 21, 4, 19, 41, 9, 5, 23, 0, 34, 28, 29, 3, 38, 17, 32, 42, 27, 1, 20, 40],
     "clot_wall_focused_pulse": [39, 21, 4, 19, 41, 9, 5, 23, 0, 34, 28, 29, 3, 38, 17, 32, 42, 27, 1, 20, 40, 43, 44, 45],
-    "clot_wall_focused_pulse+": [39, 21, 4, 19, 41, 9, 5, 23, 0, 34, 28, 29, 3, 38, 17, 32, 42, 27, 1, 20, 40, 44],
     # per-run AUC >= 0.65 (clot vs wall), spectral removed → 20 features + pulse
     "auc_cw_20":         [0, 1, 3, 4, 5, 6, 9, 17, 18, 19, 21, 22, 23, 32, 33, 38, 39, 40, 41, 42, 43, 44, 45],
     # New clot-vs-wall discriminative features (dynamic vs stable plateau)

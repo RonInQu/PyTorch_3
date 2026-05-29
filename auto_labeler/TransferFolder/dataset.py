@@ -1,0 +1,256 @@
+"""
+Dataset for 1D U-Net auto-labeler.
+
+Reads labeled parquet files and produces fixed-length chunks
+of raw resistance with per-sample labels for segmentation training.
+"""
+
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils.data import Dataset
+from pathlib import Path
+from .config import CHUNK_SIZE, NUM_CHANNELS, NUM_CLASSES, SAMPLING_RATE_HZ
+from . import config as cfg
+from typing import List, Tuple, Optional
+from scipy.ndimage import uniform_filter1d
+
+
+# 85 training studies from production baseline manifest (2026-05-18)
+TRAINING_STUDIES = [
+    "00F628C9", "05EA15A5", "09419CF3", "0D9C36A0", "15A93526",
+    "15AC6217", "16621B3E", "18A9A741", "1A8F0795", "24AFD80C",
+    "26E955BA", "325A317A", "34268034", "376DCB0D", "3B90D74B",
+    "3E146478", "42CF0AE3", "43140EA7", "453F37DC", "4633BDC0",
+    "48663E05", "4B4BF4DB", "4E3747A0", "50ACAF6E", "530618CC",
+    "58F78079", "5A31F836", "6E7EB56C", "71119917", "73CB9CA1",
+    "743CBF58", "7873BF1D", "81FC0C79", "86FA6755", "8860D580",
+    "8EE40C79", "903FE519", "9C63125D", "A225B105", "AFF18ECE",
+    "B58B74D7", "B9E8EB7F", "BAPT0001", "CENT0006", "CENT0007",
+    "CENT0009", "CENT0102", "CENT0161", "CENT0165", "CENT0176",
+    "CENT0182", "CENT0231", "D25DD102", "D4793E80", "DBEF90C4",
+    "EA7C0500", "ELCA0179", "F39B2DEA", "F60DF902", "FE454F2D",
+    "HACK0140", "HUNT0120", "HUNT0130", "HUNT0134", "HUNT0136",
+    "HUNT0150", "HUNT0159", "HUNT0177", "HUNT0178", "HUNT0198",
+    "NASHUN01", "NASHUN02", "SOMI0153", "STCL0090", "STCLD001",
+    "STCLD002", "SUMM0119", "SUMM0149", "SUMM0152", "SUMM0154",
+    "SUMM0163", "SUMM0183", "UH000008", "UHMAX001", "UNIH0148",
+]
+
+TEST_STUDIES = [
+    "39265C2B", "B9E5A9D2", "BADE209A", "BAPT0282", "BAPT0291",
+    "C245C6AB", "CENT0237", "CENT0249", "CENT0277", "CLCL0232",
+    "F4F385C8", "HUNT0275", "HUNT0288", "LINC0194", "RJWN0278",
+    "RJWN0279", "SLOA0197", "SUMM0226", "SUMM0242", "SUMM0243",
+    "WEKE0283",
+]
+
+# Re-exported from config for backward compatibility
+# NUM_CLASSES, CHUNK_SIZE, NUM_CHANNELS imported from .config
+
+
+def load_study(data_dir: Path, study_id: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Load a single study's resistance and labels."""
+    path = data_dir / f"{study_id}_labeled_segment.parquet"
+    df = pd.read_parquet(path, columns=["magRLoadAdjusted", "label"])
+    resistance = df["magRLoadAdjusted"].values.astype(np.float32)
+    labels = df["label"].values.astype(np.int64)
+    return resistance, labels
+
+
+def build_multichannel(resistance: np.ndarray) -> np.ndarray:
+    """
+    Build multi-channel representation from raw resistance.
+
+    Channels:
+      0: z-normalized resistance
+      1: first derivative (dR/dt) — detects slope changes
+      2: second derivative (d²R/dt²) — detects curvature
+      3: 1-second moving average (context, smoothed)
+      4: detrended signal (R minus 5-second moving average)
+
+    Returns: (NUM_CHANNELS, N) float32 array
+    """
+    # Z-normalize the raw signal
+    mean = resistance.mean()
+    std = resistance.std() + 1e-8
+    r_norm = (resistance - mean) / std
+
+    # Channel 0: normalized resistance
+    ch0 = r_norm
+
+    # Channel 1: first derivative
+    ch1 = np.gradient(r_norm).astype(np.float32)
+
+    # Channel 2: second derivative
+    ch2 = np.gradient(ch1).astype(np.float32)
+
+    # Channel 3: 1-second moving average
+    win_1s = int(SAMPLING_RATE_HZ)  # 150 samples at 150 Hz
+    ch3 = uniform_filter1d(r_norm, size=win_1s).astype(np.float32)
+
+    # Channel 4: detrended (remove 5-second trend)
+    win_5s = int(5 * SAMPLING_RATE_HZ)  # 750 samples at 150 Hz
+    trend = uniform_filter1d(r_norm, size=win_5s).astype(np.float32)
+    ch4 = (r_norm - trend).astype(np.float32)
+
+    return np.stack([ch0, ch1, ch2, ch3, ch4], axis=0)  # (5, N)
+
+
+def compute_class_weights(data_dir: Path, study_ids: List[str]) -> torch.Tensor:
+    """Compute inverse-frequency class weights from training data."""
+    counts = np.zeros(NUM_CLASSES, dtype=np.int64)
+    for sid in study_ids:
+        _, labels = load_study(data_dir, sid)
+        for c in range(NUM_CLASSES):
+            counts[c] += (labels == c).sum()
+    # Inverse frequency, normalized so min weight = 1.0
+    weights = counts.sum() / (NUM_CLASSES * counts.astype(np.float64))
+    weights = weights / weights.min()
+    return torch.tensor(weights, dtype=torch.float32)
+
+
+class SegmentationDataset(Dataset):
+    """
+    Dataset that chunks studies into fixed-length segments for U-Net training.
+
+    Each sample is:
+      - x: (num_channels, CHUNK_SIZE) float32 — multi-channel features
+      - y: (CHUNK_SIZE,) int64 — per-sample labels (0/1/2)
+    """
+
+    def __init__(
+        self,
+        data_dir: str,
+        study_ids: List[str],
+        chunk_size: int = CHUNK_SIZE,
+        stride: Optional[int] = None,
+        multichannel: bool = True,
+        augment: bool = False,
+    ):
+        self.data_dir = Path(data_dir)
+        self.chunk_size = chunk_size
+        self.stride = stride if stride is not None else chunk_size // 2
+        self.multichannel = multichannel
+        self.augment = augment
+
+        # Preload all data and build chunk index
+        self.chunks: List[Tuple[np.ndarray, np.ndarray]] = []
+        self._load_all(study_ids)
+
+    def _load_all(self, study_ids: List[str]):
+        """Load studies and create overlapping chunks."""
+        for sid in study_ids:
+            resistance, labels = load_study(self.data_dir, sid)
+
+            # Build feature channels
+            if self.multichannel:
+                features = build_multichannel(resistance)  # (5, N)
+            else:
+                mean = resistance.mean()
+                std = resistance.std() + 1e-8
+                features = ((resistance - mean) / std)[np.newaxis, :]  # (1, N)
+
+            n = features.shape[1]
+            start = 0
+            while start + self.chunk_size <= n:
+                f_chunk = features[:, start : start + self.chunk_size]
+                l_chunk = labels[start : start + self.chunk_size]
+                self.chunks.append((f_chunk, l_chunk))
+                start += self.stride
+
+            # Handle tail: pad last chunk if remaining > chunk_size // 4
+            remaining = n - start
+            if remaining > self.chunk_size // 4:
+                num_ch = features.shape[0]
+                f_chunk = np.zeros((num_ch, self.chunk_size), dtype=np.float32)
+                l_chunk = np.full(self.chunk_size, 0, dtype=np.int64)
+                f_chunk[:, :remaining] = features[:, start:]
+                f_chunk[:, remaining:] = features[:, -1:]
+                l_chunk[:remaining] = labels[start:]
+                self.chunks.append((f_chunk, l_chunk))
+
+    def __len__(self) -> int:
+        return len(self.chunks)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        f_chunk, l_chunk = self.chunks[idx]
+
+        if self.augment:
+            f_chunk = self._augment(f_chunk.copy())
+
+        x = torch.from_numpy(f_chunk)  # (num_channels, chunk_size)
+        y = torch.from_numpy(l_chunk)  # (chunk_size,)
+        return x, y
+
+    def _augment(self, x: np.ndarray) -> np.ndarray:
+        """Augmentations applied to all channels consistently."""
+        # Gaussian noise (on channel 0 = raw R; propagates naturally)
+        if np.random.rand() < 0.5:
+            noise = np.random.randn(x.shape[1]).astype(np.float32) * cfg.AUGMENT_NOISE_STD
+            x[0] += noise
+
+        # Amplitude scaling (all channels)
+        if np.random.rand() < 0.5:
+            scale = np.random.uniform(*cfg.AUGMENT_SCALE_RANGE)
+            x *= scale
+
+        # DC offset shift (channel 0 only)
+        if np.random.rand() < 0.3:
+            x[0] += np.random.uniform(*cfg.AUGMENT_OFFSET_RANGE)
+
+        return x
+
+
+def discover_studies(data_dir: str) -> List[str]:
+    """Discover all study IDs from parquet files in a directory.
+
+    Looks for files matching *_labeled_segment.parquet and extracts the study ID prefix.
+    """
+    data_path = Path(data_dir)
+    parquets = sorted(data_path.glob("*_labeled_segment.parquet"))
+    ids = [p.stem.replace("_labeled_segment", "") for p in parquets]
+    return ids
+
+
+def create_datasets(
+    data_dir: str,
+    val_fraction: float = 0.15,
+    chunk_size: int = CHUNK_SIZE,
+    stride: Optional[int] = None,
+    multichannel: bool = True,
+    seed: int = 42,
+) -> Tuple[SegmentationDataset, SegmentationDataset, List[str], List[str]]:
+    """
+    Create train and validation datasets with study-level split.
+
+    Discovers all *_labeled_segment.parquet files in data_dir automatically.
+
+    Returns: (train_dataset, val_dataset, train_ids, val_ids)
+    """
+    rng = np.random.default_rng(seed)
+    ids = discover_studies(data_dir)
+    if not ids:
+        raise FileNotFoundError(
+            f"No *_labeled_segment.parquet files found in {data_dir}")
+    rng.shuffle(ids)
+
+    n_val = max(1, int(len(ids) * val_fraction))
+    val_ids = ids[:n_val]
+    train_ids = ids[n_val:]
+
+    print(f"Train: {len(train_ids)} studies, Val: {len(val_ids)} studies")
+    print(f"Multichannel: {multichannel} ({'5 channels' if multichannel else '1 channel'})")
+
+    train_ds = SegmentationDataset(
+        data_dir, train_ids, chunk_size=chunk_size,
+        stride=stride, multichannel=multichannel, augment=True,
+    )
+    val_ds = SegmentationDataset(
+        data_dir, val_ids, chunk_size=chunk_size,
+        stride=chunk_size,  # no overlap for validation
+        multichannel=multichannel, augment=False,
+    )
+
+    print(f"Train chunks: {len(train_ds)}, Val chunks: {len(val_ds)}")
+    return train_ds, val_ds, train_ids, val_ids
