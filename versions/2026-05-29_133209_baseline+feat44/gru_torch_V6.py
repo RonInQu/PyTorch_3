@@ -84,7 +84,8 @@ INIT_CLOT_PROB  = (1 - INIT_BLOOD_PROB) /2
 INIT_WALL_PROB  = (1 - INIT_BLOOD_PROB) /2
 
 # Feature set selection
-FEATURE_SET = "clot_wall_focused"
+# FEATURE_SET = "clot_wall_focused"
+FEATURE_SET = "clot_wall_focused+"
 
 TOTAL_FEATURES = 65
 
