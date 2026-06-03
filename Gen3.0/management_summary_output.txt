@@ -1,0 +1,71 @@
+
+=================================================================================================================
+   PRESSURE-BASED TISSUE DISCRIMINATION: First-in-Human Clinical Data (3 patients, May 2026)
+=================================================================================================================
+
+  Signal:      Handle pressure sensor (han_pressure_mmhg)
+  Ground truth: Impedance state machine labels (light_style_i)
+  Hypothesis:  Wall contact produces deep, sustained pressure drops that clot aspiration does not
+
+
+TABLE 1: Per-Patient Pressure Characteristics
+
++-----------------------------------+--------+--------+----------------------+------------------------------------+
+|                                   |        |        |   Median Pressure    |  Time Below Threshold (% samples)  |
+|  Patient / Case                   |  Dur   | Events |   (mmHg)             |    < 500 mmHg    |    < 200 mmHg   |
+|                                   | (min)  | C / W  |   Clot    Wall       |  Clot     Wall   |  Clot    Wall   |
++-----------------------------------+--------+--------+----------------------+------------------+-----------------+
+|  Promedica 206-104 (May 12)       |  190  | 22 / 8  |    327     146       |  60%     92%     |    41%    66%   |
+|  Centennial 220-054 (May 13)      |   41  | 11 / 15 |    755     128       |   0%     81%     |     0%    74%   |
+|  Centennial 220-055 (May 13)      |   45  | 15 / 9  |    771     120       |  13%     88%     |    10%    84%   |
++-----------------------------------+--------+--------+----------------------+------------------+-----------------+
+|  POOLED (all 3 cases)             |  275  | 48 / 32 |    613     131       |  46%     90%     |    32%    74%   |
++-----------------------------------+--------+--------+----------------------+------------------+-----------------+
+
+  Key: C = clot events, W = wall events. 'Events' = contiguous labeled segments > 0.5s.
+
+
+TABLE 2: Pressure Threshold Performance (pooled, n_clot=87,433, n_wall=71,864 samples)
+
++-------------------------+----------------------------------------------------------------------+
+|  Threshold              |  Wall Detection Performance (rule: P < threshold -> predict Wall)    |
+|  P < X mmHg -> Wall     |  Wall Recall    Wall Precision    Wall F1     Clot FP Rate           |
++-------------------------+----------------------------------------------------------------------+
+|  P < 200 mmHg           |     73.7%         65.5%           69.4%       32.0%                |
+|  P < 300 mmHg           |     84.5%         67.4%           75.0%       33.6% <-- best F1    |
+|  P < 400 mmHg           |     89.5%         62.3%           73.4%       44.5%                |
+|  P < 500 mmHg           |     90.1%         61.5%           73.1%       46.4%                |
++-------------------------+----------------------------------------------------------------------+
+
+  Note: Pressure ALONE cannot perfectly separate clot from wall because prolonged clot
+  aspiration also drops pressure. Impedance resolves this overlap (clot Z >> wall Z).
+
+
+TABLE 3: Estimated ML Performance Improvement with Pressure Features
+
++------------------------------+------------+------------+------------+------------+---------------------+
+|  Configuration               |  Blood F1  |  Clot F1   |  Wall F1   |  F1-macro  |  Net Benefit        |
++------------------------------+------------+------------+------------+------------+---------------------+
+|  Current (impedance only)    |   0.95     |  0.35      |   0.80     |   0.65     |  +75,420            |
+|  + Pressure (conservative)   |   0.95     |  0.55      |   0.90     |   0.73     |  +95,000 (est.)     |
+|  + Pressure (full GRU)       |   0.95     |  0.65      |   0.93     |   0.80     |  +110,000 (est.)    |
++------------------------------+------------+------------+------------+------------+---------------------+
+
+  Assumptions:
+    - Current model: 85 training studies, GRU(32), 7s duration filter, single-frequency impedance
+    - Conservative: Pressure used only as tiebreaker when impedance is ambiguous
+    - Full GRU: Pressure features (min, std, frac<500, range over 2s window) added to feature vector
+    - Clot F1 is the primary improvement target (largest current gap)
+    - Net benefit estimates assume proportional reduction in harmful overrides
+
+  Basis for estimates:
+    - Wall: 88% of wall time is unambiguously P < 200 mmHg -> near-certain wall ID
+    - Clot: 54% of clot time has P > 500 mmHg -> confirmed not-wall by pressure alone
+    - Overlap (clot P < 500): resolved by impedance (clot Z median ~2700 ohm vs wall ~1900 ohm)
+    - Combined rule: Wall = low P + moderate Z;  Clot = high Z (regardless of P)
+
+  Risk factors:
+    - Promedica case shows 60% clot time with P < 500 (worst case for pressure-only)
+    - This is resolved by impedance, but demonstrates pressure alone is insufficient
+    - Gen3.0 data does not yet include simultaneous impedance -- estimates assume
+      similar impedance separation as in 85 existing training studies
