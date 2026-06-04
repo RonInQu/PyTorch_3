@@ -12,22 +12,23 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 # Load the CSV file
-name = "2026-05-12 206-104 Promedica_LOG4_state.parquet"
+name = "2026-05-13 220-054 Centennial_state.parquet"
 # df = pd.read_csv("LOG4_state.csv")
 
 # Save as a Parquet file
 # df.to_parquet("name", index=False)
 
 col_names = ["timestamp_ms","light_style_i", "han_pressure_mmhg"]
-# 1. Open the file metadata stream
-parquet_file = pq.ParquetFile(name)
-# 2. Pull exactly 200,000 rows into memory
-batch_iter = parquet_file.iter_batches(batch_size=2000000)
-first_batch = next(batch_iter)
-# 3. Convert that single slice into your pandas DataFrame
-dfx2 = pa.Table.from_batches([first_batch]).to_pandas()
+# # 1. Open the file metadata stream
+# parquet_file = pq.ParquetFile(name)
+# # 2. Pull exactly 200,000 rows into memory
+# batch_iter = parquet_file.iter_batches(batch_size=2000000)
+# first_batch = next(batch_iter)
+# # 3. Convert that single slice into your pandas DataFrame
+# dfx2 = pa.Table.from_batches([first_batch]).to_pandas()
 
-# dfx2 = pd.read_parquet(name,columns=col_names)
+dfx2 = pd.read_parquet(name,columns=col_names)
+dfx2 = pd.read_parquet(name)
 time = dfx2.timestamp_ms/1000
 lbl_0 = dfx2.cms_led_state_i
 plt.figure()
