@@ -136,6 +136,12 @@ def main():
 
     torch.manual_seed(cfg.SEED)
     np.random.seed(cfg.SEED)
+    torch.cuda.manual_seed_all(cfg.SEED)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    import os
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    torch.use_deterministic_algorithms(True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
@@ -151,13 +157,22 @@ def main():
         seed=cfg.SEED,
     )
 
+    g = torch.Generator()
+    g.manual_seed(cfg.SEED)
+
+    def seed_worker(worker_id):
+        worker_seed = cfg.SEED + worker_id
+        np.random.seed(worker_seed)
+
     train_loader = DataLoader(
         train_ds, batch_size=cfg.BATCH_SIZE, shuffle=True,
         num_workers=cfg.NUM_WORKERS, pin_memory=(device.type == "cuda"),
+        generator=g, worker_init_fn=seed_worker,
     )
     val_loader = DataLoader(
         val_ds, batch_size=cfg.BATCH_SIZE, shuffle=False,
         num_workers=cfg.NUM_WORKERS, pin_memory=(device.type == "cuda"),
+        worker_init_fn=seed_worker,
     )
 
     # Class weights
