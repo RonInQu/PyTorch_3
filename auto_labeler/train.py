@@ -83,7 +83,9 @@ def train_one_epoch(model, loader, criterion, optimizer, scheduler, device):
         x, y = x.to(device), y.to(device)
         optimizer.zero_grad()
         logits = model(x)  # (B, C, L)
-        loss = criterion(logits, y)
+        # Reshape to (B*L, C) to use deterministic 1D CE loss path
+        B, C, L = logits.shape
+        loss = criterion(logits.permute(0, 2, 1).reshape(B * L, C), y.reshape(B * L))
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.GRAD_CLIP_NORM)
         optimizer.step()
@@ -106,7 +108,9 @@ def validate(model, loader, criterion, device):
     for x, y in loader:
         x, y = x.to(device), y.to(device)
         logits = model(x)
-        loss = criterion(logits, y)
+        # Reshape to (B*L, C) to use deterministic 1D CE loss path
+        B, C, L = logits.shape
+        loss = criterion(logits.permute(0, 2, 1).reshape(B * L, C), y.reshape(B * L))
 
         total_loss += loss.item() * x.size(0)
         total_samples += x.size(0)
@@ -141,7 +145,7 @@ def main():
     torch.backends.cudnn.benchmark = False
     import os
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-    torch.use_deterministic_algorithms(True, warn_only=True)
+    torch.use_deterministic_algorithms(True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
