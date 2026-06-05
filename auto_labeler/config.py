@@ -42,7 +42,7 @@ AUGMENT_SCALE_RANGE = (0.9, 1.1)  # Amplitude scaling range
 AUGMENT_OFFSET_RANGE = (-0.1, 0.1)  # DC offset range
 
 # ─── Post-processing ─────────────────────────────────────────────────────────
-MIN_EVENT_DURATION_SEC = 1.0      # Minimum event duration (seconds)
+MIN_EVENT_DURATION_SEC = 5.0      # Minimum event duration (seconds)
 MIN_EVENT_DURATION_SAMPLES = int(MIN_EVENT_DURATION_SEC * SAMPLING_RATE_HZ)  # = 150
 
 # ─── Inference ────────────────────────────────────────────────────────────────
