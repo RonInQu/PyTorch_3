@@ -20,7 +20,7 @@ CHUNK_SIZE = 4096                 # Samples per training chunk (~27.3s at 150 Hz
 BASE_FILTERS = 32                 # Filters in first encoder level (doubles each level)
 DEPTH = 5                         # Number of encoder/decoder levels
 KERNEL_SIZE = 7                   # Convolution kernel size (odd)
-DROPOUT = 0.0                     # Dropout rate (0=off, 0.2=light regularization)
+DROPOUT = 0.2                     # Dropout rate (0=off, 0.2=light regularization)
 
 # ─── Training ────────────────────────────────────────────────────────────────
 EPOCHS = 80                       # Max training epochs
