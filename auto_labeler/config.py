@@ -13,7 +13,7 @@ NUM_CLASSES = 3                   # blood=0, clot=1, wall=2
 CLASS_NAMES = ["blood", "clot", "wall"]
 
 # ─── Input ────────────────────────────────────────────────────────────────────
-NUM_CHANNELS = 1                  # 1=single-channel (z-norm R), 5=multichannel
+NUM_CHANNELS = 5                  # 1=single-channel (z-norm R), 5=multichannel
 CHUNK_SIZE = 4096*2                 # Samples per training chunk (~27.3s at 150 Hz)
 
 # ─── Architecture ────────────────────────────────────────────────────────────
