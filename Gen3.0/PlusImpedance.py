@@ -4,11 +4,11 @@ from matplotlib.collections import LineCollection
 import numpy as np
 
 # Load the CSV file
-name = "2026-05-13 220-055 Centennial_LOG3_state.parquet"
-dfx1 = pd.read_csv(name+'.csv')
+name = "2026-05-12 206-104 Promedica_state.parquet"
+# dfx1 = pd.read_csv(name+'.csv')
 
 # Save as a Parquet file
-dfx1.to_parquet(name+".parquet", index=False)
+# dfx1.to_parquet(name+".parquet", index=False)
 
 col_names = ["timestamp_ms","light_style_i", "han_pressure_mmhg"]
 dfx2 = pd.read_parquet(name, columns=col_names)
