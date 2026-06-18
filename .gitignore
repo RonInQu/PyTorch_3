@@ -42,6 +42,10 @@ src/models/*.json
 *.npz
 *.pptx
 *.html
+.step
+.dxf
+.sldprt
+.stl
 
 # Exceptions — track these specific files
 !**/manifest.txt
