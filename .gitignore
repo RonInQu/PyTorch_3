@@ -31,6 +31,7 @@ src/models/*.json
 *.odt
 *.txt
 *.md
+*.mph
 *.png
 *.jpg
 *.log
@@ -46,6 +47,7 @@ src/models/*.json
 .dxf
 .sldprt
 .stl
+*.step
 
 # Exceptions — track these specific files
 !**/manifest.txt
