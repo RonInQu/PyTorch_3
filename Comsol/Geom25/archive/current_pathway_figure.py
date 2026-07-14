@@ -168,7 +168,7 @@ def draw_vessel_cross_section(ax, title, recessed=True, tissue='clot'):
                                     mutation_scale=12, zorder=10)
             ax.add_patch(arrow)
         
-        ax.text(0, r_vessel + 2.0, 'Z ≈ 3500 Ω', ha='center', fontsize=11, fontweight='bold',
+        ax.text(0, r_vessel + 2.0, 'Z ≈ 2800 Ω', ha='center', fontsize=11, fontweight='bold',
                 color='darkblue', bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
         desc = 'Clot fills lumen → all current through clot'
         if recessed:
@@ -281,9 +281,9 @@ def draw_vessel_cross_section(ax, title, recessed=True, tissue='clot'):
 
 
 # Draw the 4 panels
-draw_vessel_cross_section(axes[0, 0], 'Recessed + CLOT → Z=3500Ω', recessed=True, tissue='clot')
+draw_vessel_cross_section(axes[0, 0], 'Recessed + CLOT → Z=2800Ω', recessed=True, tissue='clot')
 draw_vessel_cross_section(axes[0, 1], 'Recessed + WALL → Z=1800Ω', recessed=True, tissue='wall')
-draw_vessel_cross_section(axes[1, 0], 'Flush + CLOT → Z=3500Ω', recessed=False, tissue='clot')
+draw_vessel_cross_section(axes[1, 0], 'Flush + CLOT → Z=2800Ω', recessed=False, tissue='clot')
 draw_vessel_cross_section(axes[1, 1], 'Flush + WALL → Z≈800Ω (Blood!)', recessed=False, tissue='wall')
 
 # Row labels
@@ -294,7 +294,7 @@ fig.text(0.02, 0.30, 'Flush\n(0mm)', ha='left', va='center', fontsize=10,
 
 # Key insight box
 fig.text(0.5, 0.01, 
-         'KEY: Clot fills entire lumen → no blood escape path → Z=3500Ω (both recessed & flush).  '
+         'KEY: Clot fills entire lumen → no blood escape path → Z=2800Ω (both recessed & flush).  '
          'Wall: catheter against wall, blood in crescent below.  '
          'Flush: current escapes along surface to blood crescent (Z≈800Ω).  '
          'Recessed: recess walls block surface escape → forced through wall (Z=1800Ω).',

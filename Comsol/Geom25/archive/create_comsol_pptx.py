@@ -285,7 +285,7 @@ add_content_slide(prs, "Executive Summary", bullets=[
     "",
     "Demonstrated Value (this presentation):",
     "  • Built complete 3D model from real catheter geometry (PRT-1173, 24FR)",
-    "  • Calibrated to match measured impedances: Blood=800, Clot=3500, Wall=1800 Ω",
+    "  • Calibrated to match measured impedances: Blood=800, Clot=2800, Wall=1800 Ω",
     "  • Discovered critical finding: 0.02mm blood film reduces discrimination by 35%",
     "  • Identified 100 follow-up simulations to optimize electrode design",
     "",
@@ -356,7 +356,7 @@ add_equation_slide(prs, "Governing Equations", [
 add_content_slide(prs, "Model Calibration: Matches Measured Impedance", bullets=[
     "Calibrated via cell constant K = 702 m⁻¹:",
     "  • σ_blood = K / Z_blood = 702/800 = 0.8775 S/m",
-    "  • σ_clot  = K / Z_clot  = 702/3500 = 0.2006 S/m",
+    "  • σ_clot  = K / Z_clot  = 702/2800 = 0.2507 S/m",
     "  • σ_wall  = K / Z_wall  = 702/1800 = 0.3900 S/m",
     "",
     "Validation result:",

@@ -14,6 +14,7 @@ import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
 from scipy.special import gamma
+from scipy.stats import gaussian_kde
 
 # =====================================================================
 #  CONFIGURATION
@@ -29,7 +30,7 @@ K_eff = 728 * 0.8775  # = 639 m^-1
 
 # Target impedances
 Z_target_blood = 800
-Z_target_clot = 3500
+Z_target_clot = 2800
 Z_target_wall = 1800
 
 # Calibrated conductivities: these are the SIMPLE K/Z values used in Geom30.
@@ -41,7 +42,7 @@ Z_target_wall = 1800
 # conductivity at 50 kHz, and apply Cole-Cole only as a RELATIVE frequency
 # correction factor.
 sigma_blood_50k = K_eff / Z_target_blood  # 0.799 S/m (effective at 50 kHz)
-sigma_clot_50k = K_eff / Z_target_clot    # 0.183 S/m
+sigma_clot_50k = K_eff / Z_target_clot    # 0.228 S/m
 sigma_wall_50k = K_eff / Z_target_wall    # 0.355 S/m
 
 # Film thicknesses to evaluate [m]
@@ -312,25 +313,110 @@ plt.savefig(out_dir / 'mc_discrimination_vs_film.png', dpi=150, bbox_inches='tig
 plt.close()
 print(f"\nFigure 1 saved: {out_dir / 'mc_discrimination_vs_film.png'}")
 
-# --- Figure 2: Z histograms at 50 kHz, no film ---
-fig, axes = plt.subplots(1, 3, figsize=(14, 4))
-fi_50 = np.where(freqs == 50e3)[0][0]
-colors = {'blood': 'red', 'clot': 'saddlebrown', 'wall': 'green'}
-for ax, tissue in zip(axes, ['blood', 'clot', 'wall']):
-    z = Z_bare[tissue][fi_50, :]
-    ax.hist(z, bins=80, color=colors[tissue], alpha=0.7, edgecolor='black', lw=0.3)
-    ax.axvline(np.median(z), color='black', ls='-', lw=2, label=f'Median={np.median(z):.0f}')
-    ax.axvline(np.percentile(z, 5), color='gray', ls='--', label=f'P5={np.percentile(z, 5):.0f}')
-    ax.axvline(np.percentile(z, 95), color='gray', ls='--', label=f'P95={np.percentile(z, 95):.0f}')
+# --- Figure 2/2b: Z histograms + overlaid line distributions at 5/50/100 kHz, no film ---
+colors = {'blood': 'green', 'wall': 'blue', 'clot': 'red'}
+plot_tissues = ['blood', 'clot', 'wall']
+plot_freqs = [5e3, 50e3, 100e3]
+
+for f_plot in plot_freqs:
+    fi_plot = np.where(freqs == f_plot)[0][0]
+    f_khz = int(f_plot / 1e3)
+
+    # Histogram bars (one panel per tissue)
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
+    for ax, tissue in zip(axes, plot_tissues):
+        z = Z_bare[tissue][fi_plot, :]
+        ax.hist(z, bins=80, color=colors[tissue], alpha=0.7, edgecolor='black', lw=0.3)
+        ax.axvline(np.median(z), color='black', ls='-', lw=2, label=f'Median={np.median(z):.0f}')
+        ax.axvline(np.percentile(z, 5), color='gray', ls='--', label=f'P5={np.percentile(z, 5):.0f}')
+        ax.axvline(np.percentile(z, 95), color='gray', ls='--', label=f'P95={np.percentile(z, 95):.0f}')
+        ax.set_xlabel('|Z| [Ω]')
+        ax.set_title(f'{tissue.capitalize()} @ {f_khz} kHz')
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    hist_path = out_dir / f'mc_z_distributions_{f_khz}kHz.png'
+    plt.savefig(hist_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Figure 2 ({f_khz} kHz) saved: {hist_path}")
+
+    # Overlaid solid-line density curves (no bars)
+    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+    z_data = {tissue: Z_bare[tissue][fi_plot, :] for tissue in plot_tissues}
+
+    # Use shared bins so curves are directly comparable.
+    z_all = np.concatenate([z_data['blood'], z_data['clot'], z_data['wall']])
+    bins = np.linspace(z_all.min(), z_all.max(), 120)
+    bin_centers = 0.5 * (bins[:-1] + bins[1:])
+
+    for tissue in plot_tissues:
+        density, _ = np.histogram(z_data[tissue], bins=bins, density=True)
+        ax.plot(
+            bin_centers,
+            density,
+            color=colors[tissue],
+            lw=2.2,
+            linestyle='-',
+            label=f"{tissue.capitalize()}"
+        )
+
     ax.set_xlabel('|Z| [Ω]')
-    ax.set_title(f'{tissue.capitalize()} @ 50 kHz')
-    ax.legend(fontsize=8)
+    ax.set_ylabel('Density')
+    ax.set_title(f'Overlaid Impedance Distributions @ {f_khz} kHz (No Film)')
+    ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)
 
-plt.tight_layout()
-plt.savefig(out_dir / 'mc_z_distributions_50kHz.png', dpi=150, bbox_inches='tight')
-plt.close()
-print(f"Figure 2 saved: {out_dir / 'mc_z_distributions_50kHz.png'}")
+    plt.tight_layout()
+    overlay_path = out_dir / f'mc_z_distributions_{f_khz}kHz_overlay_lines.png'
+    plt.savefig(overlay_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Figure 2b ({f_khz} kHz) saved: {overlay_path}")
+
+    # --- Cross-talk matrix at this frequency ---
+    # Fit a KDE for each tissue, then for every sample from tissue A ask:
+    # which tissue's KDE gives the highest density?  C[A,B] = fraction of
+    # A's samples that look most like B  (row = true, col = predicted).
+    print(f"\nCross-talk matrix @ {f_khz} kHz (row=true tissue, col=most-likely tissue):")
+    kde = {t: gaussian_kde(z_data[t]) for t in plot_tissues}
+
+    matrix = np.zeros((3, 3))  # [true_idx, pred_idx]
+    t_idx  = {t: i for i, t in enumerate(plot_tissues)}
+
+    for true_t in plot_tissues:
+        samples = z_data[true_t]
+        # Evaluate all three KDEs at every sample point
+        densities = np.vstack([kde[t](samples) for t in plot_tissues])  # (3, N)
+        predicted  = np.argmax(densities, axis=0)                        # (N,)
+        for pred_i in range(3):
+            matrix[t_idx[true_t], pred_i] = np.mean(predicted == pred_i)
+
+    # Print table
+    header = f"{'':>8}" + "".join(f"{t:>10}" for t in plot_tissues)
+    print(header)
+    for i, true_t in enumerate(plot_tissues):
+        row_str = f"{true_t:>8}" + "".join(f"{matrix[i, j]:>10.1%}" for j in range(3))
+        print(row_str)
+
+    # Heatmap figure
+    fig_xt, ax_xt = plt.subplots(figsize=(5, 4))
+    im = ax_xt.imshow(matrix, vmin=0, vmax=1, cmap='RdYlGn')
+    ax_xt.set_xticks(range(3)); ax_xt.set_xticklabels([t.capitalize() for t in plot_tissues])
+    ax_xt.set_yticks(range(3)); ax_xt.set_yticklabels([t.capitalize() for t in plot_tissues])
+    ax_xt.set_xlabel('Predicted (highest KDE)')
+    ax_xt.set_ylabel('True tissue')
+    ax_xt.set_title(f'Impedance Cross-Talk Matrix @ {f_khz} kHz')
+    plt.colorbar(im, ax=ax_xt, label='Fraction of samples')
+    for i in range(3):
+        for j in range(3):
+            ax_xt.text(j, i, f'{matrix[i, j]:.1%}',
+                       ha='center', va='center', fontsize=11,
+                       color='black' if 0.25 < matrix[i, j] < 0.75 else 'white')
+    fig_xt.tight_layout()
+    xt_path = out_dir / f'mc_crosstalk_matrix_{f_khz}kHz.png'
+    fig_xt.savefig(xt_path, dpi=150, bbox_inches='tight')
+    plt.close(fig_xt)
+    print(f"Cross-talk heatmap saved: {xt_path}")
 
 # --- Figure 3: Discrimination ratio histogram at 50kHz for each film ---
 fig, axes = plt.subplots(1, len(film_mm_list), figsize=(16, 4), sharey=True)

@@ -136,7 +136,7 @@ else:
     # Placeholder values (update after COMSOL run)
     Z_results = {
         'Blood': {'Z': 800, 'target': 800, 'ratio': 1.0},
-        'Clot': {'Z': 3500, 'target': 3500, 'ratio': 4.38},
+        'Clot': {'Z': 2800, 'target': 2800, 'ratio': 3.50},
         'Wall': {'Z': 1800, 'target': 1800, 'ratio': 2.25},
     }
     print("WARNING: No impedance_results.csv found; using placeholder values.")
@@ -328,7 +328,7 @@ clot_z = Z_results.get('Clot', {}).get('Z', '—')
 clot_ratio = Z_results.get('Clot', {}).get('ratio', '—')
 
 bullets(s, 0.5, 5.0, 12.5, 2.2, [
-    f"Clot impedance: {clot_z:.0f} Ohm (target: 3500). Clot/Blood ratio: {clot_ratio:.2f}x."
+    f"Clot impedance: {clot_z:.0f} Ohm (target: 2800). Clot/Blood ratio: {clot_ratio:.2f}x."
     if isinstance(clot_z, float) else "Run COMSOL model for clot impedance values.",
     "Low clot conductivity concentrates field near electrodes — less current penetrates to vessel wall.",
     "Reduced current = higher impedance = primary clot detection signal.",
@@ -375,7 +375,7 @@ title_bar(s, "3D Impedance Results Summary",
 comsol_3d_badge(s)
 
 # Impedance table
-tgt = [800, 3500, 1800]
+tgt = [800, 2800, 1800]
 mats = ['Blood', 'Clot', 'Wall']
 rows = []
 for m, t in zip(mats, tgt):

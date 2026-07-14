@@ -29,12 +29,12 @@ from pathlib import Path
 #  PARAMETERS (matching Geom25.m)
 # =====================================================================
 sigma_blood = 0.8775   # S/m
-sigma_clot  = 0.2006   # S/m
+sigma_clot  = 0.2507   # S/m
 sigma_wall  = 0.3900   # S/m
 K_cell      = 702.0    # m^-1
 
 Z_blood_ref = K_cell / sigma_blood   # 800 Ω
-Z_clot_ref  = K_cell / sigma_clot    # 3500 Ω
+Z_clot_ref  = K_cell / sigma_clot    # 2800 Ω
 Z_wall_ref  = K_cell / sigma_wall    # 1800 Ω
 
 # Geometry
