@@ -959,9 +959,15 @@ def process_file(filepath: Path,
     ax3.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig(OUTPUT_FOLDER / f"{study_name}_detected_vs_clot_wall_probs.png", dpi=300, bbox_inches='tight')
+    _prob_plot_path = OUTPUT_FOLDER / f"{study_name}_detected_vs_clot_wall_probs.png"
+    try:
+        plt.savefig(_prob_plot_path, dpi=300, bbox_inches='tight')
+        print(f"  Saved probability plot")
+    except OSError as e:
+        # Typical on Windows/OneDrive when the target PNG is locked by an image viewer
+        # or is in a bad sync state. Skip so the batch keeps going.
+        print(f"  WARNING: could not save probability plot ({e}); continuing")
     plt.close()
-    print(f"  Saved probability plot")
 
     # ── Three-panel plot ──
     if gt_labels is not None and da_labels is not None:
@@ -1027,9 +1033,13 @@ def process_file(filepath: Path,
                 ax.set_xlabel('Time (seconds)')
 
         plt.tight_layout(h_pad=0.8)
-        plt.savefig(OUTPUT_FOLDER / f"{study_name}_ml_da_gt_three_panel.png", dpi=300, bbox_inches='tight')
+        _three_panel_path = OUTPUT_FOLDER / f"{study_name}_ml_da_gt_three_panel.png"
+        try:
+            plt.savefig(_three_panel_path, dpi=300, bbox_inches='tight')
+            print(f"  Saved three-panel plot")
+        except OSError as e:
+            print(f"  WARNING: could not save three-panel plot ({e}); continuing")
         plt.close()
-        print(f"  Saved three-panel plot")
 
         # Metrics (on labeled samples only)
         print(f"\n{study_name} metrics:")
@@ -1086,13 +1096,19 @@ def main():
     all_override_times = []
 
     for f in files:
-        process_file(f,
-                     all_gt_labels=all_gt_labels,
-                     all_da_labels=all_da_labels,
-                     all_ml_preds=all_ml_preds,
-                     all_override_times=all_override_times,
-                     save_parquet=SAVE_PARQUET,
-                     save_csv=SAVE_CSV)
+        try:
+            process_file(f,
+                         all_gt_labels=all_gt_labels,
+                         all_da_labels=all_da_labels,
+                         all_ml_preds=all_ml_preds,
+                         all_override_times=all_override_times,
+                         save_parquet=SAVE_PARQUET,
+                         save_csv=SAVE_CSV)
+        except Exception as e:
+            print(f"  ERROR processing {f.name}: {type(e).__name__}: {e}")
+            print(f"  Skipping and continuing with remaining files.")
+            import matplotlib.pyplot as _plt
+            _plt.close('all')
 
     # ── Global summary ──
     if all_gt_labels:
