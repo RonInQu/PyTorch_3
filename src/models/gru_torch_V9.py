@@ -81,9 +81,14 @@ DA_LABEL_CONFIDENCE = 0.97 #0.92   # confidence assigned to the DA-labeled class
 DA_OTHER_CONFIDENCE = (1.0 - DA_LABEL_CONFIDENCE) / 2  # 0.04   # split equally among the other two classes
 
 # V9 gating thresholds
-DA_PERSISTENCE_STREAK = 3
-DA_BLOOD_LOW_CONFIDENCE = 0.75
-DA_NONBLOOD_LOW_CONFIDENCE = 0.72
+# ML must present a STABLE, CONFIDENT, SUSTAINED disagreement before it is
+# allowed to override DA on clot/wall. Single-sample confidence spikes are not
+# enough. This eliminates the harmful overrides in noisy files (9CB4378D, PALM0507)
+# while preserving the good overrides in files where raw is genuinely stable (FJFK).
+DA_PERSISTENCE_STREAK = 3          # DA must persist this many samples before being trusted
+DA_BLOOD_LOW_CONFIDENCE = 0.75      # unused now: DA blood is unconditional (V6 rule)
+ML_STABILITY_STREAK = 5             # raw GRU must predict same class for this many samples
+ML_STABILITY_MEAN_CONF = 0.85       # mean raw confidence during that stable run must exceed this
 
 # ── Initial posterior (blood-dominant prior) ──
 # Starting belief before any data: mostly blood.
@@ -672,6 +677,10 @@ class LiveClotDetector:
         self.feat_history = deque(maxlen=SEQ_LEN)
         self.da_last_label = None
         self.da_streak = 0
+        # Raw-prediction stability tracking (V9 refined)
+        self.raw_last_idx = None
+        self.raw_stable_streak = 0
+        self.raw_conf_window = deque(maxlen=ML_STABILITY_STREAK)
 
     def _make_da_probs(self, da_label):
         """Build a probability vector heavily favoring the DA-labeled class."""
@@ -691,34 +700,43 @@ class LiveClotDetector:
             self.da_last_label = da_label
             self.da_streak = 1
 
-    def _ml_first_da_gate(self, raw_probs, da_label):
-        """Return True only when DA is persistent and the model is uncertain.
-
-        V9 policy:
-          - ML remains the default decision maker.
-          - DA may override only when the raw GRU confidence is low and the same
-            DA label has been observed repeatedly.
-          - This keeps the model useful instead of collapsing toward DA.
+    def _update_raw_stability(self, raw_probs):
+        """Track how many consecutive samples the raw GRU has predicted the same
+        class, and keep a rolling window of raw confidence for that stable run.
         """
-        if da_label is None:
-            return False
-        if self.da_streak < DA_PERSISTENCE_STREAK:
-            return False
+        idx = int(np.argmax(raw_probs))
+        conf = float(np.max(raw_probs))
+        if idx == self.raw_last_idx:
+            self.raw_stable_streak += 1
+        else:
+            self.raw_last_idx = idx
+            self.raw_stable_streak = 1
+            self.raw_conf_window.clear()
+        self.raw_conf_window.append(conf)
 
-        raw_top_idx = int(np.argmax(raw_probs))
-        raw_top_conf = float(np.max(raw_probs))
+    def _ml_should_override_da(self, da_label):
+        """Return True when ML has EARNED the right to override DA on clot/wall.
 
-        if da_label == 0:
-            # Blood reset is only trusted when DA blood is persistent and the model
-            # is not confidently disagreeing with it.
-            return raw_top_conf < DA_BLOOD_LOW_CONFIDENCE
+        V9 refined policy: DA wins clot/wall by default. ML only overrides when
+        the raw GRU has been STABLY predicting the same non-DA class for at
+        least ML_STABILITY_STREAK samples AND the mean raw confidence over that
+        stable run exceeds ML_STABILITY_MEAN_CONF.
 
-        # For clot/wall, avoid overriding a well-supported ML decision.
-        if raw_top_idx == da_label:
+        Rationale: single-sample confidence spikes from a noisy raw signal
+        (e.g., PALM0507, 9CB4378D) drive most harmful overrides. Requiring
+        stability across time filters those out while preserving the sustained
+        clean signals (FJFK, 5CF6D2D1) where ML genuinely beats DA.
+        """
+        if da_label not in (1, 2):
             return False
-        if raw_top_conf >= 0.80:
+        if self.raw_last_idx is None or self.raw_last_idx == da_label:
             return False
-        return raw_top_conf < DA_NONBLOOD_LOW_CONFIDENCE
+        if self.raw_stable_streak < ML_STABILITY_STREAK:
+            return False
+        if len(self.raw_conf_window) < ML_STABILITY_STREAK:
+            return False
+        mean_conf = float(np.mean(self.raw_conf_window))
+        return mean_conf >= ML_STABILITY_MEAN_CONF
 
     @torch.no_grad()
     def predict(self, active_feats, da_label=None):
@@ -799,9 +817,11 @@ class LiveClotDetector:
         # HARD RULE (kept from V6): DA blood is unconditional. When DA says blood,
         # the final prediction is blood no matter what ML says. This is required
         # to keep clot from leaking onto the blood baseline.
-        # For clot/wall, keep the V9 ML-first hybrid: DA only overrides when the
-        # model is uncertain and the DA label has persisted for multiple samples.
+        # For clot/wall, DA wins by default. ML only overrides when the raw GRU
+        # has been STABLY predicting the same non-DA class with high mean
+        # confidence for at least ML_STABILITY_STREAK consecutive samples.
         self._update_da_streak(da_label)
+        self._update_raw_stability(probs)
 
         if da_label is not None:
             if da_label == 0:
@@ -812,19 +832,18 @@ class LiveClotDetector:
                 return self.posterior.copy()
 
             elif da_label in (1, 2):
-                # DA says clot/wall → ML-first: only override when model is weak
-                # and DA is persistent.
-                if self._ml_first_da_gate(probs, da_label):
+                # DA says clot/wall → DA wins by default. ML only takes over
+                # with stable, sustained, confident disagreement.
+                if not self._ml_should_override_da(da_label):
                     self.posterior = self._make_da_probs(da_label)
 
-        # ── Step 4: Final safety check, but still ML-first ──
-        # This is intentionally conservative: if the raw model is confident or the
-        # DA label is not persistent, we keep the ML state.
+        # ── Step 4: Final safety check ──
+        # After EMA blending, if the posterior drifted away from DA on clot/wall
+        # and ML has NOT earned override rights, snap back to DA.
         if da_label in (1, 2):
             final_idx = np.argmax(self.posterior)
-            if final_idx != da_label and self.da_streak >= DA_PERSISTENCE_STREAK:
-                if np.max(probs) < DA_NONBLOOD_LOW_CONFIDENCE:
-                    self.posterior = self._make_da_probs(da_label)
+            if final_idx != da_label and not self._ml_should_override_da(da_label):
+                self.posterior = self._make_da_probs(da_label)
 
         return self.posterior.copy()
 
