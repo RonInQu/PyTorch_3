@@ -25,6 +25,9 @@ src/data/*.pkl
 src/training/*.pkl
 src/training/*.pt
 src/models/*.json
+Ultrasound/ResonantFreq/*.STA
+Ultrasound/*.xlsx
+
 
 # Others
 *.docx
