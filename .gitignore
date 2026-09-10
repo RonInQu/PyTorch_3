@@ -58,6 +58,7 @@ src/models/*.json
 *.pkl*
 *.pt*
 *.sta
+*.STA
 
 # Exceptions — track these specific files
 !**/manifest.txt
