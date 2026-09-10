@@ -1,30 +1,27 @@
 # gru_torch_V9.py
 """
-Real-time clot detection — V9
+Real-time clot detection — V9 (2-class)
 
-V9 is a hybrid ML-first policy:
-  - ML prediction remains the primary output.
-  - DA acts only as a safety override when the ML model is weak and the DA label
-    persists for multiple consecutive reports.
-  - This avoids the V8 problem where DA almost always wins and suppresses useful ML signal.
+V9 architectural change: the model is now 2-class (clot vs wall) instead of 3-class.
+Rationale: DA blood is unconditional (V6 rule kept), so the model never needs to
+learn blood. Removing blood focuses model capacity on the actual hard problem:
+distinguishing clot from wall at high resistance.
 
-Stripped feature set: original 40 + Hjorth mobility, Hjorth complexity, mean abs 2nd derivative, flatness.
-Total features = 57.  No FFT, no sample entropy, no zero-crossing, no transition features.
+Internal representation:
+  - model output: 2 logits → softmax → [P(clot), P(wall)]
+  - posterior:    2-vec after EMA blending
+  - emit format:  3-vec [P(blood), P(clot), P(wall)] for downstream compatibility
+                  • DA=blood → emit [1, 0, 0]
+                  • DA=clot/wall → emit [0, P(clot), P(wall)]
+                  • DA=None → emit [0, P(clot), P(wall)] (rare)
 
-Feature index map (V8/V9 vs V5):
-  f0-f39:  same as V5 (original 40)
-  f40:     Hjorth mobility      (was V5 f44)
-  f41:     Hjorth complexity     (was V5 f45)
-  f42:     Mean abs 2nd deriv   (was V5 f52)
-  f43:     Flatness             (fraction of window with near-zero local slope)
-  V5 f40-f43 (spectral), f46 (SampEn), f47 (ZCR), f48-f51 (transition): REMOVED
-  f46:     Coefficient of Variation (std/mean) — clot=high, wall=low
-  f47:     Plateau fraction     — fraction of window in stable bands; wall=high, clot=low
-  f48:     Settling time ratio  — how quickly signal settles after max; wall=fast, clot=slow
-  f49:     Trend stationarity   — last-quarter / first-quarter mean ratio; wall≈1, clot≠1
-  f50:     R level relative to baseline — (mean-800)/800; blood≈0, clot=moderate, wall=high
-  f51-f56: Short-timescale slopes (abs linear reg over 0.1s, 0.2s, ..., 0.6s of window end)
-  f57-f63: Rise-shape features (amplitude-normalized, invariant to R level)
+Policy (unchanged from V9 raw-stability gate):
+  - DA blood: unconditional, hard reset (matches V6)
+  - DA clot/wall: DA wins by default; ML overrides only when raw model has been
+    stably predicting the same non-DA class with high mean confidence for
+    ML_STABILITY_STREAK consecutive samples.
+
+Feature set is unchanged from V6.
 """
 
 import os
@@ -584,8 +581,8 @@ active_dim = len(active_idx)
 _idx_hash = hash(tuple(active_idx)) % 0xFFFF
 dim_str = f"{FEATURE_SET}_{active_dim}_{_idx_hash:04x}"
 
-SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
-MODEL_PATH = PROJECT_ROOT / "src" / "training" / "clot_gru_trained.pt"
+SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_V9_2class_seq{SEQ_LEN}_{dim_str}.pkl"
+MODEL_PATH = PROJECT_ROOT / "src" / "training" / "clot_gru_trained_V9_2class.pt"
 
 # ── Ensemble configuration ──
 # Set ENSEMBLE_SEEDS to a list of seeds to average multiple models' outputs.
@@ -603,7 +600,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ClotGRU Model
 # ────────────────────────────────────────────────
 class ClotGRU(nn.Module):
-    def __init__(self, input_size=None, hidden_size=32, output_size=3):
+    def __init__(self, input_size=None, hidden_size=32, output_size=2):
         super().__init__()
         if input_size is None:
             input_size = active_dim
@@ -647,8 +644,8 @@ class LiveClotDetector:
             self.hiddens = []
             model_dir = PROJECT_ROOT / "src" / "training"
             for seed in ensemble_seeds:
-                # Find the best model for this seed (highest F1 in filename)
-                pattern = f"clot_gru_trained_seq{SEQ_LEN}_{FEATURE_SET}_seed{seed}_f1*.pt"
+                # V9 (2-class) model naming
+                pattern = f"clot_gru_trained_V9_2class_seq{SEQ_LEN}_{FEATURE_SET}_seed{seed}_f1*.pt"
                 candidates = sorted(model_dir.glob(pattern))
                 if not candidates:
                     print(f"  WARNING: No model found for seed {seed} ({pattern})")
@@ -672,21 +669,54 @@ class LiveClotDetector:
             self.hiddens = [None]
             self.ensemble = False
 
-        self.posterior = np.array([INIT_BLOOD_PROB, INIT_CLOT_PROB, INIT_WALL_PROB],
-                                  dtype=np.float32)
+        # 2-class internal posterior: [P(clot), P(wall)]
+        # Initialized near class prior from training data (clot ~66%, wall ~34%).
+        # Blood is NEVER in this posterior; blood is emitted only when DA says blood.
+        self.posterior = np.array([0.65, 0.35], dtype=np.float32)
         self.feat_history = deque(maxlen=SEQ_LEN)
         self.da_last_label = None
         self.da_streak = 0
-        # Raw-prediction stability tracking (V9 refined)
+        # Raw-prediction stability tracking
+        # raw_last_idx uses the 2-class model index (0=clot, 1=wall).
         self.raw_last_idx = None
         self.raw_stable_streak = 0
         self.raw_conf_window = deque(maxlen=ML_STABILITY_STREAK)
+        # raw_probs is stored as a 3-vec for downstream diagnostic compatibility:
+        # [0.0, P(clot), P(wall)]. Blood slot is always 0 because model is 2-class.
+        self.raw_probs = np.array([0.0, 0.65, 0.35], dtype=np.float32)
+
+    def _emit(self):
+        """Convert the 2-class posterior to the 3-vec [blood, clot, wall] format
+        that downstream code expects. Blood is 0 here because this method is only
+        called when we are NOT in DA-blood; DA-blood emits [1,0,0] directly.
+        """
+        return np.array([0.0, float(self.posterior[0]), float(self.posterior[1])],
+                        dtype=np.float32)
+
+    def _make_da_probs_2class(self, da_label):
+        """Build a 2-class probability vector [P(clot), P(wall)] heavily favoring
+        the DA-labeled class. da_label is 1 (clot) or 2 (wall) in the 3-class
+        namespace; map to 2-class index (0=clot, 1=wall).
+        """
+        da_idx = 0 if da_label == 1 else 1
+        p = np.array([DA_OTHER_CONFIDENCE * 2, DA_OTHER_CONFIDENCE * 2], dtype=np.float32)
+        # Use DA_LABEL_CONFIDENCE on the DA class, with the remainder on the other.
+        p[da_idx] = DA_LABEL_CONFIDENCE
+        p[1 - da_idx] = 1.0 - DA_LABEL_CONFIDENCE
+        return p
 
     def _make_da_probs(self, da_label):
-        """Build a probability vector heavily favoring the DA-labeled class."""
-        da_probs = np.array([DA_OTHER_CONFIDENCE] * 3, dtype=np.float32)
-        da_probs[da_label] = DA_LABEL_CONFIDENCE
-        return da_probs
+        """Legacy 3-vec builder kept for the final emit path when DA overrides ML.
+        Returns [P(blood), P(clot), P(wall)].
+        """
+        p = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        p[da_label] = DA_LABEL_CONFIDENCE
+        # Split remaining probability across the two non-DA classes.
+        other = (1.0 - DA_LABEL_CONFIDENCE) / 2
+        for i in range(3):
+            if i != da_label:
+                p[i] = other
+        return p
 
     def _update_da_streak(self, da_label):
         """Track persistence of the DA label across consecutive reports."""
@@ -700,12 +730,13 @@ class LiveClotDetector:
             self.da_last_label = da_label
             self.da_streak = 1
 
-    def _update_raw_stability(self, raw_probs):
+    def _update_raw_stability(self, raw_probs_2c):
         """Track how many consecutive samples the raw GRU has predicted the same
-        class, and keep a rolling window of raw confidence for that stable run.
+        2-class label (0=clot or 1=wall), and keep a rolling window of raw
+        confidence for that stable run.
         """
-        idx = int(np.argmax(raw_probs))
-        conf = float(np.max(raw_probs))
+        idx = int(np.argmax(raw_probs_2c))
+        conf = float(np.max(raw_probs_2c))
         if idx == self.raw_last_idx:
             self.raw_stable_streak += 1
         else:
@@ -718,18 +749,17 @@ class LiveClotDetector:
         """Return True when ML has EARNED the right to override DA on clot/wall.
 
         V9 refined policy: DA wins clot/wall by default. ML only overrides when
-        the raw GRU has been STABLY predicting the same non-DA class for at
-        least ML_STABILITY_STREAK samples AND the mean raw confidence over that
-        stable run exceeds ML_STABILITY_MEAN_CONF.
+        the raw GRU has been STABLY predicting the same non-DA 2-class label
+        for at least ML_STABILITY_STREAK samples AND the mean raw confidence
+        over that stable run exceeds ML_STABILITY_MEAN_CONF.
 
-        Rationale: single-sample confidence spikes from a noisy raw signal
-        (e.g., PALM0507, 9CB4378D) drive most harmful overrides. Requiring
-        stability across time filters those out while preserving the sustained
-        clean signals (FJFK, 5CF6D2D1) where ML genuinely beats DA.
+        da_label is in the 3-class namespace: 1=clot, 2=wall. Map to 2-class:
+        0=clot, 1=wall.
         """
         if da_label not in (1, 2):
             return False
-        if self.raw_last_idx is None or self.raw_last_idx == da_label:
+        da_idx_2c = 0 if da_label == 1 else 1
+        if self.raw_last_idx is None or self.raw_last_idx == da_idx_2c:
             return False
         if self.raw_stable_streak < ML_STABILITY_STREAK:
             return False
@@ -741,23 +771,25 @@ class LiveClotDetector:
     @torch.no_grad()
     def predict(self, active_feats, da_label=None):
         """
-        Run one prediction step.  Returns a 3-element posterior [P(blood), P(clot), P(wall)].
+        Run one prediction step. Returns a 3-element vector [P(blood), P(clot), P(wall)]
+        for downstream compatibility, even though the internal model is 2-class.
 
-          Pipeline:
-             1. Scale features, build sequence, run GRU(s) → raw probs
-                 (ensemble: average logits across all models before softmax)
-             2. EMA-blend the raw GRU probs into the running posterior
-             3. If DA label present, use the smoothed posterior to decide whether
-                 DA should override the current state
-             4. Post-EMA safety check: force DA label if the posterior still
-                 disagrees and remains below the confidence threshold
+        Pipeline:
+          1. Scale features, build sequence, run GRU(s) → raw 2-class probs [P(clot), P(wall)]
+          2. EMA-blend into the 2-class posterior
+          3. DA guardrail:
+             - da_label == 0  → hard blood emit [1,0,0], clear state, return
+             - da_label ∈ {1,2} → DA wins by default; ML overrides only when the
+               raw stability gate is satisfied
+             - da_label is None → emit posterior directly
+          4. Final safety snap: on da_label ∈ {1,2}, if posterior drifted away
+             from DA and gate not satisfied, snap posterior to DA.
         """
 
         # ── Step 1: Scale features & run GRU(s) ──
         scaled = self.scaler.transform(active_feats.reshape(1, -1))[0]
         self.feat_history.append(scaled)
 
-        # Pad the sequence with the earliest available frame if we don't have SEQ_LEN yet
         if len(self.feat_history) < SEQ_LEN:
             pad = list(self.feat_history)[0] if self.feat_history else scaled
             seq_list = [pad] * (SEQ_LEN - len(self.feat_history)) + list(self.feat_history)
@@ -767,85 +799,61 @@ class LiveClotDetector:
         seq = np.array(seq_list, dtype=np.float32)
         x = torch.from_numpy(seq).float().unsqueeze(0).to(DEVICE)
 
-        # Run all models and average logits
         all_logits = []
         for i, model in enumerate(self.models):
             logits, h = model(x, self.hiddens[i])
             self.hiddens[i] = h.detach() if h is not None else None
             all_logits.append(logits)
 
-        # Average logits (ensemble) or use single logits
         avg_logits = torch.stack(all_logits).mean(dim=0)
 
-        # Temperature-scaled softmax.  Tune TEMPERATURE (>1 → softer/less peaky probs)
-        probs = torch.softmax(avg_logits / TEMPERATURE, 1).squeeze(0).cpu().numpy()
-        self.raw_probs = probs.copy()  # store for diagnostics
+        # 2-class temperature-scaled softmax → [P(clot), P(wall)]
+        probs_2c = torch.softmax(avg_logits / TEMPERATURE, 1).squeeze(0).cpu().numpy()
 
-        prior_idx = np.argmax(self.posterior)  # class the posterior currently favors
+        # Store raw probs as a 3-vec for diagnostic compatibility.
+        self.raw_probs = np.array([0.0, float(probs_2c[0]), float(probs_2c[1])],
+                                  dtype=np.float32)
 
-        # ── Step 2: EMA blending ──
-        # Blend new probs into the running posterior.  The blend weights depend
-        # on what transition is happening, to control responsiveness vs stability.
-        #
-        # Tuning guide:
-        #   - EMA_BLOOD_PRIOR:   when currently in blood. More NEW → faster clot/wall detection.
-        #   - EMA_EXIT_TO_BLOOD: leaving clot/wall back to blood. More NEW → faster recovery.
-        #   - EMA_SAME_CLASS:    staying in same non-blood class. More HISTORY → more stable.
-        #   - EMA_CROSS_CLASS:   clot↔wall switch. More HISTORY → resist flicker.
-        if prior_idx == 0:
-            # Currently in blood — moderately reactive to new evidence
-            alpha_history = EMA_BLOOD_PRIOR_HISTORY
-            alpha_new     = EMA_BLOOD_PRIOR_NEW
+        # ── Step 2: EMA blending (2-class) ──
+        # No blood transitions — model only distinguishes clot vs wall.
+        prior_idx = int(np.argmax(self.posterior))   # 0=clot, 1=wall
+        new_idx   = int(np.argmax(probs_2c))
+        if new_idx == prior_idx:
+            alpha_history = EMA_SAME_CLASS_HISTORY
+            alpha_new     = EMA_SAME_CLASS_NEW
         else:
-            new_idx = np.argmax(probs)
-            if new_idx == 0:
-                # Transitioning back to blood — respond quickly
-                alpha_history = EMA_EXIT_TO_BLOOD_HISTORY
-                alpha_new     = EMA_EXIT_TO_BLOOD_NEW
-            elif new_idx == prior_idx:
-                # Confirming same non-blood class — stay very stable
-                alpha_history = EMA_SAME_CLASS_HISTORY
-                alpha_new     = EMA_SAME_CLASS_NEW
-            else:
-                # Clot↔wall switch — resist flicker, change very slowly
-                alpha_history = EMA_CROSS_CLASS_HISTORY
-                alpha_new     = EMA_CROSS_CLASS_NEW
+            alpha_history = EMA_CROSS_CLASS_HISTORY
+            alpha_new     = EMA_CROSS_CLASS_NEW
 
-        self.posterior = alpha_history * self.posterior + alpha_new * probs
+        self.posterior = alpha_history * self.posterior + alpha_new * probs_2c
 
         # ── Step 3: DA guardrail ──
-        # HARD RULE (kept from V6): DA blood is unconditional. When DA says blood,
-        # the final prediction is blood no matter what ML says. This is required
-        # to keep clot from leaking onto the blood baseline.
-        # For clot/wall, DA wins by default. ML only overrides when the raw GRU
-        # has been STABLY predicting the same non-DA class with high mean
-        # confidence for at least ML_STABILITY_STREAK consecutive samples.
         self._update_da_streak(da_label)
-        self._update_raw_stability(probs)
+        self._update_raw_stability(probs_2c)
 
         if da_label is not None:
             if da_label == 0:
                 # DA says blood → hard reset. Unconditional, no gate.
-                self.posterior = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+                # Reset 2-class posterior to neutral prior and clear model state.
+                self.posterior = np.array([0.65, 0.35], dtype=np.float32)
                 self.hiddens = [None] * len(self.models)
                 self.feat_history.clear()
-                return self.posterior.copy()
+                return np.array([1.0, 0.0, 0.0], dtype=np.float32)
 
             elif da_label in (1, 2):
                 # DA says clot/wall → DA wins by default. ML only takes over
                 # with stable, sustained, confident disagreement.
                 if not self._ml_should_override_da(da_label):
-                    self.posterior = self._make_da_probs(da_label)
+                    self.posterior = self._make_da_probs_2class(da_label)
 
         # ── Step 4: Final safety check ──
-        # After EMA blending, if the posterior drifted away from DA on clot/wall
-        # and ML has NOT earned override rights, snap back to DA.
         if da_label in (1, 2):
-            final_idx = np.argmax(self.posterior)
-            if final_idx != da_label and not self._ml_should_override_da(da_label):
-                self.posterior = self._make_da_probs(da_label)
+            da_idx_2c = 0 if da_label == 1 else 1
+            final_idx = int(np.argmax(self.posterior))
+            if final_idx != da_idx_2c and not self._ml_should_override_da(da_label):
+                self.posterior = self._make_da_probs_2class(da_label)
 
-        return self.posterior.copy()
+        return self._emit()
 
 # ────────────────────────────────────────────────
 #  Main Processing
