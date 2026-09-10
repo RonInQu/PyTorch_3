@@ -1,27 +1,30 @@
 # gru_torch_V9.py
 """
-Real-time clot detection — V9 (2-class)
+Real-time clot detection — V9 (2-class: clot vs wall)
 
-V9 architectural change: the model is now 2-class (clot vs wall) instead of 3-class.
-Rationale: DA blood is unconditional (V6 rule kept), so the model never needs to
-learn blood. Removing blood focuses model capacity on the actual hard problem:
-distinguishing clot from wall at high resistance.
+Architecture:
+  - GRU model outputs 2 logits → softmax → [P(clot), P(wall)].
+  - Blood is NEVER predicted by the model. It is emitted only when the
+    detector-agnostic (DA) logic tree says blood (unconditional V6 rule).
+  - Downstream code still receives a 3-vec [P(blood), P(clot), P(wall)]
+    for backward compatibility:
+        • DA=blood        → emit [1, 0, 0] (hard reset)
+        • DA=clot/wall    → DA wins by default; ML overrides only when
+                             the raw-stability gate is satisfied
+        • DA=None         → emit [0, P(clot), P(wall)] from posterior
 
-Internal representation:
-  - model output: 2 logits → softmax → [P(clot), P(wall)]
-  - posterior:    2-vec after EMA blending
-  - emit format:  3-vec [P(blood), P(clot), P(wall)] for downstream compatibility
-                  • DA=blood → emit [1, 0, 0]
-                  • DA=clot/wall → emit [0, P(clot), P(wall)]
-                  • DA=None → emit [0, P(clot), P(wall)] (rare)
+Stability gate (ML override rights):
+  Raw GRU must predict the SAME non-DA class for at least
+  ML_STABILITY_STREAK consecutive samples AND the mean raw confidence over
+  that stable run must exceed ML_STABILITY_MEAN_CONF.
 
-Policy (unchanged from V9 raw-stability gate):
-  - DA blood: unconditional, hard reset (matches V6)
-  - DA clot/wall: DA wins by default; ML overrides only when raw model has been
-    stably predicting the same non-DA class with high mean confidence for
-    ML_STABILITY_STREAK consecutive samples.
+  Thresholds are tuned for the 2-class model, which peaks at lower confidence
+  than a 3-class model (typical peak ~0.75–0.85 on test data vs ~0.95 for
+  the 3-class variant). Setting the mean-conf floor too high blocks all ML
+  overrides; too low lets noisy files (PALM0507, 9CB4378D) do harm.
 
-Feature set is unchanged from V6.
+Feature set: same 57-dim clot_wall_focused set used since V6. Scaler, cache,
+and model artifacts are all V9-tagged so V6 files are untouched.
 """
 
 import os
@@ -77,22 +80,25 @@ EMA_CROSS_CLASS_NEW     = 1 - EMA_CROSS_CLASS_HISTORY
 DA_LABEL_CONFIDENCE = 0.97 #0.92   # confidence assigned to the DA-labeled class
 DA_OTHER_CONFIDENCE = (1.0 - DA_LABEL_CONFIDENCE) / 2  # 0.04   # split equally among the other two classes
 
-# V9 gating thresholds
+# V9 gating thresholds (calibrated for the 2-class model)
 # ML must present a STABLE, CONFIDENT, SUSTAINED disagreement before it is
 # allowed to override DA on clot/wall. Single-sample confidence spikes are not
-# enough. This eliminates the harmful overrides in noisy files (9CB4378D, PALM0507)
-# while preserving the good overrides in files where raw is genuinely stable (FJFK).
+# enough. The 2-class model's raw softmax peaks at lower values than the old
+# 3-class model because balanced classes cap the max output around 0.75–0.85
+# on test data. Setting ML_STABILITY_MEAN_CONF too high blocks all ML overrides.
 DA_PERSISTENCE_STREAK = 3          # DA must persist this many samples before being trusted
 DA_BLOOD_LOW_CONFIDENCE = 0.75      # unused now: DA blood is unconditional (V6 rule)
-ML_STABILITY_STREAK = 5             # raw GRU must predict same class for this many samples
-ML_STABILITY_MEAN_CONF = 0.85       # mean raw confidence during that stable run must exceed this
+ML_STABILITY_STREAK    = 4         # raw GRU must predict same class for this many samples
+ML_STABILITY_MEAN_CONF = 0.70      # mean raw confidence during that stable run must exceed this
 
-# ── Initial posterior (blood-dominant prior) ──
-# Starting belief before any data: mostly blood.
-# Increase INIT_BLOOD_PROB to make the detector more conservative (slower to leave blood).
-INIT_BLOOD_PROB = 0.95
-INIT_CLOT_PROB  = (1 - INIT_BLOOD_PROB) /2
-INIT_WALL_PROB  = (1 - INIT_BLOOD_PROB) /2
+# ── Initial posterior (2-class) ──
+# Blood is NEVER in the 2-class posterior. These 3-class constants are kept
+# only so downstream diagnostic code that references them does not break.
+# The actual initialization in LiveClotDetector uses [0.65, 0.35] — the
+# approximate clot/wall class prior from training data.
+INIT_BLOOD_PROB = 0.0     # legacy, unused by the 2-class detector
+INIT_CLOT_PROB  = 0.65    # legacy, matches training clot prior
+INIT_WALL_PROB  = 0.35    # legacy, matches training wall prior
 
 # Feature set selection
 FEATURE_SET = "clot_wall_focused"
