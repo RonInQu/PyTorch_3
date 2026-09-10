@@ -8,8 +8,8 @@ import os
 # User settings
 # ============================================================
 data_dir = r'C:\Users\RonaldKurnik\OneDrive - Inquis Medical\Documents\2026\PyTorch_3\Ultrasound\ResonantFreq'
-input_file = os.path.join(data_dir, 'Q7air_08.04.2026.TXT')   # <-- change as needed
-output_plot = os.path.join(data_dir, 'crystal_GB_BvD.png')
+input_file = os.path.join(data_dir, 'Test3.TXT')          # <-- change filename
+output_plot = os.path.join(data_dir, 'crystal_GB_BvD_Bfeatures.png')
 # ============================================================
 
 def read_4294A_GB(filename):
@@ -68,19 +68,17 @@ def read_4294A_GB(filename):
 freq, G, B = read_4294A_GB(input_file)
 omega = 2 * np.pi * freq
 
-print(f'\nFreq range: {freq[0]/1e6:.6f} – {freq[-1]/1e6:.6f} MHz')
-
 # ------------------------------------------------------------------
-# Basic resonance parameters from G
+# G-based parameters
 # ------------------------------------------------------------------
 imax = np.argmax(G)
 fs = freq[imax]
 Gmax = G[imax]
 Rm = 1.0 / Gmax if Gmax > 0 else np.nan
+B_at_fs = B[imax]                    # <-- B value at conductance peak
 
-# –3 dB bandwidth
+# –3 dB bandwidth from G
 half = Gmax / 2.0
-
 left = np.where(G[:imax] <= half)[0]
 if len(left) > 0:
     iL = left[-1]
@@ -99,48 +97,64 @@ delta_f = f_right - f_left
 Q = fs / delta_f if delta_f > 0 else np.nan
 
 # ------------------------------------------------------------------
+# B-curve features
+# ------------------------------------------------------------------
+# Maximum of B (usually just below fs)
+i_Bmax = np.argmax(B)
+f_Bmax = freq[i_Bmax]
+Bmax = B[i_Bmax]
+
+# Minimum of B (usually just above fs)
+i_Bmin = np.argmin(B)
+f_Bmin = freq[i_Bmin]
+Bmin = B[i_Bmin]
+
+# Bandwidth estimated from B max/min separation
+delta_f_B = f_Bmin - f_Bmax
+Q_from_B = fs / delta_f_B if delta_f_B > 0 else np.nan
+
+# ------------------------------------------------------------------
 # Butterworth-van Dyke parameters
 # ------------------------------------------------------------------
-# Motional arm
-Lm = Q * Rm / (2 * np.pi * fs)          # Henry
-Cm = 1.0 / (Lm * (2 * np.pi * fs)**2)   # Farad
+Lm = Q * Rm / (2 * np.pi * fs)
+Cm = 1.0 / (Lm * (2 * np.pi * fs)**2)
 
-# Static capacitance C0 from susceptance far from resonance
-# Use the average of B/(ω) on the lower-frequency side (away from the peak)
-# (simple robust estimate)
-n_baseline = max(10, len(freq)//10)          # first ~10 % of points
+# C0 estimate (only reliable with wider spans)
+n_baseline = max(10, len(freq)//10)
 C0_est = np.mean(B[:n_baseline] / omega[:n_baseline])
-
-# Alternative: median of the whole baseline regions
 mask_low  = freq < (fs - 5*delta_f)
 mask_high = freq > (fs + 5*delta_f)
-if np.any(mask_low) or np.any(mask_high):
-    C0_pts = np.concatenate([
-        B[mask_low]  / omega[mask_low]  if np.any(mask_low)  else [],
-        B[mask_high] / omega[mask_high] if np.any(mask_high) else []
-    ])
-    C0 = np.median(C0_pts) if len(C0_pts) > 0 else C0_est
+C0_pts = []
+if np.any(mask_low):
+    C0_pts.append(B[mask_low] / omega[mask_low])
+if np.any(mask_high):
+    C0_pts.append(B[mask_high] / omega[mask_high])
+if C0_pts:
+    C0 = np.median(np.concatenate(C0_pts))
 else:
     C0 = C0_est
 
 # ------------------------------------------------------------------
 # Print results
 # ------------------------------------------------------------------
-print('\n========== Resonance Parameters ==========')
-print(f'fs          = {fs:.3f} Hz  ({fs/1e6:.6f} MHz)')
-print(f'Rm          = {Rm:.4f} Ω')
-print(f'Q           = {Q:.1f}')
-print(f'Δf (–3 dB)  = {delta_f:.3f} Hz')
+print('\n========== Resonance from G ==========')
+print(f'fs              = {fs:.3f} Hz  ({fs/1e6:.6f} MHz)')
+print(f'Rm              = {Rm:.4f} Ω')
+print(f'Q (from G)      = {Q:.1f}')
+print(f'Δf (–3 dB, G)   = {delta_f:.3f} Hz')
+print(f'B at fs         = {B_at_fs*1000:.3f} mS')
+
+print('\n========== Features from B curve ==========')
+print(f'f_Bmax          = {f_Bmax:.3f} Hz  ({f_Bmax/1e6:.6f} MHz)   Bmax = {Bmax*1000:.3f} mS')
+print(f'f_Bmin          = {f_Bmin:.3f} Hz  ({f_Bmin/1e6:.6f} MHz)   Bmin = {Bmin*1000:.3f} mS')
+print(f'Δf (Bmax–Bmin)  = {delta_f_B:.3f} Hz')
+print(f'Q (from B)      = {Q_from_B:.1f}')
 
 print('\n========== Butterworth-van Dyke ==========')
-print(f'Rm          = {Rm:.4f} Ω')
-print(f'Lm          = {Lm*1e3:.4f} mH')
-print(f'Cm          = {Cm*1e15:.4f} fF')
-print(f'C0          = {C0*1e12:.4f} pF')
-
-# Consistency check: fs from Lm, Cm
-fs_check = 1.0 / (2 * np.pi * np.sqrt(Lm * Cm))
-print(f'\nConsistency: 1/(2π√(Lm Cm)) = {fs_check/1e6:.6f} MHz')
+print(f'Rm              = {Rm:.4f} Ω')
+print(f'Lm              = {Lm*1e3:.4f} mH')
+print(f'Cm              = {Cm*1e15:.4f} fF')
+print(f'C0              = {C0*1e12:.4f} pF')
 
 # ------------------------------------------------------------------
 # Plot
@@ -152,14 +166,17 @@ ax1.axhline(half*1000, color='r', ls='--', alpha=0.7, label='Half power')
 ax1.axvline(fs/1e6, color='g', ls='--', alpha=0.7)
 ax1.plot(fs/1e6, Gmax*1000, 'ro')
 ax1.set_ylabel('Conductance G (mS)')
-ax1.set_title(f'Crystal G–B  |  fs = {fs/1e6:.6f} MHz   Rm = {Rm:.2f} Ω   Q ≈ {Q:.0f}\n'
-              f'Lm = {Lm*1e3:.2f} mH   Cm = {Cm*1e15:.2f} fF   C0 = {C0*1e12:.2f} pF')
+ax1.set_title(f'fs = {fs/1e6:.6f} MHz   Rm = {Rm:.1f} Ω   Q ≈ {Q:.0f}\n'
+              f'Lm = {Lm*1e3:.2f} mH   Cm = {Cm*1e15:.2f} fF   C0 = {C0*1e12:.1f} pF')
 ax1.legend(loc='best')
 ax1.grid(True)
 
 ax2.plot(freq/1e6, B*1000, 'm-', lw=1.2, label='B')
 ax2.axhline(0, color='k', lw=0.6)
-ax2.axvline(fs/1e6, color='g', ls='--', alpha=0.7)
+ax2.axvline(fs/1e6, color='g', ls='--', alpha=0.7, label='fs (G peak)')
+ax2.plot(f_Bmax/1e6, Bmax*1000, 'go', label='B max')
+ax2.plot(f_Bmin/1e6, Bmin*1000, 'rs', label='B min')
+ax2.plot(fs/1e6, B_at_fs*1000, 'k^', label='B at fs')
 ax2.set_xlabel('Frequency (MHz)')
 ax2.set_ylabel('Susceptance B (mS)')
 ax2.legend(loc='best')

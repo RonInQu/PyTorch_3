@@ -36,7 +36,9 @@ import numpy as np
 # input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\merged_expts_with_events_v94\event_files'
 # input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\ReAnalyisOfExpts\New_April6'
 # input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\ReAnalyisOfExpts\New_April10'
-input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\14May2026\merged_expts_with_events\parquets'
+# input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\14May2026\merged_expts_with_events\parquets'
+# input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\31August2026'
+input_folder = r'C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\PostMay_strict'
 
 NOISE_VALUE = 5
 SAMPLE_RATE = 150
@@ -56,7 +58,7 @@ testing_folder  = os.path.join(output_base, 'testing')
 for folder in [training_folder, graphics_folder, testing_folder]:
     os.makedirs(folder, exist_ok=True)
 
-pattern = os.path.join(input_folder, '_merged_rec_and_event_*.parquet')
+pattern = os.path.join(input_folder, '*.parquet')
 parquet_files = glob.glob(pattern)
 
 if not parquet_files:
@@ -136,15 +138,21 @@ def blank_short_tissue_events(df, resistance_col, label_col, blood_median, min_d
 
 
 for file_path in parquet_files:
-    study_name = os.path.basename(file_path).split('_merged_rec_and_event_')[1].split('.parquet')[0]
+    basename = os.path.basename(file_path)
+    if '_merged_rec_and_event_' in basename:
+        study_name = basename.split('_merged_rec_and_event_')[1].split('.parquet')[0]
+    else:
+        study_name = os.path.splitext(basename)[0]
     print(f"\nProcessing: {study_name}")
 
     df1 = pd.read_parquet(file_path)
 
     event_col = 'event_type_1'
     time_col = df1.columns[0]
-    imp_col_name = df1.columns[2]
-    baseline_col_name = df1.columns[3]
+
+    # Use named columns; fall back to positional for legacy files
+    imp_col_name = 'imp' if 'imp' in df1.columns else df1.columns[2]
+    baseline_col_name = 'blood_baseline' if 'blood_baseline' in df1.columns else df1.columns[3]
 
     # Baseline subtraction + 800 (consistent with LabelingWithSubtraction)
     df1['magRLoadAdjusted'] = df1[imp_col_name] - df1[baseline_col_name] + 800

@@ -48,6 +48,16 @@ src/models/*.json
 .sldprt
 .stl
 *.step
+*.mhtml
+*.xlsx
+*.mat
+*.css
+*.asv
+*.bin
+*.asc
+*.pkl*
+*.pt*
+*.sta
 
 # Exceptions — track these specific files
 !**/manifest.txt

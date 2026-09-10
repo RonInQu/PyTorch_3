@@ -1,22 +1,22 @@
 ======================================================================
 GLOBAL SUMMARY ACROSS ALL STUDIES
 ======================================================================
-DA  Accuracy: 0.8928    F1-macro: 0.6895
-ML  Accuracy: 0.8747    F1-macro: 0.6468
-Improvement: Acc -0.0181   F1 -0.0426
+DA  Accuracy: 0.8192    F1-macro: 0.6249
+ML  Accuracy: 0.8327    F1-macro: 0.6424
+Improvement: Acc +0.0135   F1 +0.0175
 
-DA  Precision: 0.7211    Recall: 0.6705
-ML  Precision: 0.6689    Recall: 0.6358
-Improvement: Precision -0.0523   Recall -0.0347
+DA  Precision: 0.6501    Recall: 0.6139
+ML  Precision: 0.6450    Recall: 0.6487
+Improvement: Precision -0.0051   Recall +0.0348
 
 ──────────────────────────────────────────────────────────────────────
 GLOBAL OVERRIDE ANALYSIS
 ──────────────────────────────────────────────────────────────────────
-Total overrides across all studies: 101343
-  Correct overrides (ML right, DA wrong): 26303
-  Harmful overrides (DA right, ML wrong): 72654
-  Neither correct (both wrong differently): 2386
+Total overrides across all studies: 156072
+  Correct overrides (ML right, DA wrong): 76545
+  Harmful overrides (DA right, ML wrong): 43129
+  Neither correct (both wrong differently): 36398
 
-  Override Precision: 0.2595  (target: >0.85)
-  Override Recall:    0.1352  (of 194531 DA clot/wall errors)
-  Net benefit:        -46351 samples
+  Override Precision: 0.4904  (target: >0.85)
+  Override Recall:    0.2697  (of 283771 DA clot/wall errors)
+  Net benefit:        +33416 samples

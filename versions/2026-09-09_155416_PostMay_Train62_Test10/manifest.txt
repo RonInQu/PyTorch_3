@@ -1,0 +1,114 @@
+# Pipeline version — 2026-09-09_155416
+# Feature set: clot_wall_focused (21 features)
+# SEQ_LEN: 8
+# Best F1-macro: 0.7548
+# Note: Best seed 456
+# Model: clot_gru_trained.pt
+# Scaler: clot_feature_scaler_5s_seq8_clot_wall_focused_21_f1cb.pkl
+
+=== LABELING CONFIG ===
+Blood events:    [6, 12]
+Clot events:     [7, 11]
+Wall events:     [23]
+Artifact events: [8 (contrast), 15 (saline)] — always blanked
+Noise value:     5
+Blank mask:      ~tissue | (R>5000)  [all non-tissue blanked]
+
+=== TRAINING CONFIG ===
+Seeds:          [456]
+Window sec:     5.0
+Stride samples: 30
+Batch size:     1024
+Epochs:         100
+Patience:       15
+Learning rate:  0.0001
+Weight decay:   0.0001
+Class weights:  [1.0, 1.0, 1.0]
+
+=== INFERENCE CONFIG ===
+Temperature:           1.5
+GRU override clot:     0.92
+GRU override wall:     0.97
+DA label confidence:   0.97
+EMA blood prior:       0.78
+EMA exit to blood:     0.35
+EMA same class:        0.97
+EMA cross class:       0.99
+Init posterior:         [0.95, 0.025000000000000022, 0.025000000000000022]
+Report interval ms:    200
+
+=== TRAINING (62) ===
+17942C02
+27E82335
+33939864
+37391150
+4330FE9A
+56714BFE
+5677D056
+66B25B9C
+68CF784E
+7309AF62
+73DEF3B4
+7A8DD8A9
+7F65E647
+86F0C916
+92E48374
+939F2CE7
+974568D7
+9D646189
+AD363068
+BAPT0530
+BETH0363
+BROW0484
+BROW0490
+BROW0495
+BROW0500
+BROW0518
+CC93D1F7
+CE65B766
+D38C0BAC
+DE6F7116
+ELCA0523
+ELCA0524
+F5F6064E
+FJFK0513
+HACK0416
+HUNT0420
+HUNT0421
+HUNT0434
+HUNT0435
+HUNT0504
+HUNT0510
+MEGE0486
+MESJ0387
+MESJ0452
+PALM0393
+PARM0400
+PARM0413
+RWJN0353
+RWJN0470
+RWJN0515
+SFGN0366
+SLOA0236
+STCL0451
+STCL0466
+UNIH0170
+UNIH0346
+WEST0422
+WEST0449
+WEST0462
+WEST0463
+WEST0501
+WEST0525
+
+=== TEST (10) ===
+3BFC1B78
+5CF6D2D1
+5DFFDF16
+6DF156D5
+9CB4378D
+CENT0358
+D9074A4E
+FJFK0509
+PALM0507
+STCL0440
