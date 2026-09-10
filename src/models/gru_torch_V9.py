@@ -86,10 +86,21 @@ DA_OTHER_CONFIDENCE = (1.0 - DA_LABEL_CONFIDENCE) / 2  # 0.04   # split equally 
 # enough. The 2-class model's raw softmax peaks at lower values than the old
 # 3-class model because balanced classes cap the max output around 0.75–0.85
 # on test data. Setting ML_STABILITY_MEAN_CONF too high blocks all ML overrides.
-DA_PERSISTENCE_STREAK = 3          # DA must persist this many samples before being trusted
-DA_BLOOD_LOW_CONFIDENCE = 0.75      # unused now: DA blood is unconditional (V6 rule)
-ML_STABILITY_STREAK    = 4         # raw GRU must predict same class for this many samples
-ML_STABILITY_MEAN_CONF = 0.70      # mean raw confidence during that stable run must exceed this
+#
+# Additional steadiness checks (added after observing 9CB4378D failure):
+#   - peak conf floor: the max raw confidence in the window must exceed
+#     ML_STABILITY_PEAK_CONF. On 9CB the model oscillates around 0.60–0.75
+#     without ever getting truly confident — this filters those out.
+#   - conf range cap: max-min of raw confidence in the window must stay
+#     under ML_STABILITY_CONF_RANGE. This rejects "argmax-stable but confidence
+#     oscillating" runs (9CB pattern) while preserving "argmax-stable and
+#     confidence steady high" runs (5DFFDF16 pattern).
+DA_PERSISTENCE_STREAK    = 3       # DA must persist this many samples before being trusted
+DA_BLOOD_LOW_CONFIDENCE  = 0.75    # unused now: DA blood is unconditional (V6 rule)
+ML_STABILITY_STREAK      = 4       # raw GRU must predict same class for this many samples
+ML_STABILITY_MEAN_CONF   = 0.72    # mean raw confidence during that stable run must exceed this
+ML_STABILITY_PEAK_CONF   = 0.80    # AND the peak raw confidence in the run must exceed this
+ML_STABILITY_CONF_RANGE  = 0.15    # AND the confidence range (max-min) must stay under this
 
 # ── Initial posterior (2-class) ──
 # Blood is NEVER in the 2-class posterior. These 3-class constants are kept
@@ -755,9 +766,15 @@ class LiveClotDetector:
         """Return True when ML has EARNED the right to override DA on clot/wall.
 
         V9 refined policy: DA wins clot/wall by default. ML only overrides when
-        the raw GRU has been STABLY predicting the same non-DA 2-class label
-        for at least ML_STABILITY_STREAK samples AND the mean raw confidence
-        over that stable run exceeds ML_STABILITY_MEAN_CONF.
+        ALL of the following are true over the last ML_STABILITY_STREAK samples:
+          1. Raw GRU has predicted the same non-DA 2-class label the whole time
+             (argmax stability).
+          2. Mean raw confidence  >= ML_STABILITY_MEAN_CONF.
+          3. Peak raw confidence  >= ML_STABILITY_PEAK_CONF (never gets truly
+             confident? probably wrong; block).
+          4. Confidence range (max - min) <= ML_STABILITY_CONF_RANGE (steady
+             confidence, not oscillating; filters 9CB4378D-style failures where
+             the argmax is stable but the confidence swings wildly).
 
         da_label is in the 3-class namespace: 1=clot, 2=wall. Map to 2-class:
         0=clot, 1=wall.
@@ -771,8 +788,19 @@ class LiveClotDetector:
             return False
         if len(self.raw_conf_window) < ML_STABILITY_STREAK:
             return False
-        mean_conf = float(np.mean(self.raw_conf_window))
-        return mean_conf >= ML_STABILITY_MEAN_CONF
+
+        conf_arr = np.asarray(self.raw_conf_window, dtype=np.float32)
+        mean_conf = float(conf_arr.mean())
+        peak_conf = float(conf_arr.max())
+        conf_range = float(conf_arr.max() - conf_arr.min())
+
+        if mean_conf < ML_STABILITY_MEAN_CONF:
+            return False
+        if peak_conf < ML_STABILITY_PEAK_CONF:
+            return False
+        if conf_range > ML_STABILITY_CONF_RANGE:
+            return False
+        return True
 
     @torch.no_grad()
     def predict(self, active_feats, da_label=None):
