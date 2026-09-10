@@ -795,23 +795,25 @@ class LiveClotDetector:
 
         self.posterior = alpha_history * self.posterior + alpha_new * probs
 
-        # ── Step 3: DA guardrail, not DA-dominant override ──
-        # V9 rule: ML remains the primary output. DA only overrides when the model
-        # is uncertain and that DA label has persisted for multiple consecutive samples.
+        # ── Step 3: DA guardrail ──
+        # HARD RULE (kept from V6): DA blood is unconditional. When DA says blood,
+        # the final prediction is blood no matter what ML says. This is required
+        # to keep clot from leaking onto the blood baseline.
+        # For clot/wall, keep the V9 ML-first hybrid: DA only overrides when the
+        # model is uncertain and the DA label has persisted for multiple samples.
         self._update_da_streak(da_label)
 
         if da_label is not None:
             if da_label == 0:
-                # Strong DA blood evidence can still force a reset, but only when it is
-                # persistent and the raw model is not confidently disagreeing.
-                if self._ml_first_da_gate(probs, da_label):
-                    self.posterior = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-                    self.hiddens = [None] * len(self.models)
-                    self.feat_history.clear()
-                    return self.posterior.copy()
+                # DA says blood → hard reset. Unconditional, no gate.
+                self.posterior = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+                self.hiddens = [None] * len(self.models)
+                self.feat_history.clear()
+                return self.posterior.copy()
 
             elif da_label in (1, 2):
-                # Use the raw-model confidence to decide whether DA can win.
+                # DA says clot/wall → ML-first: only override when model is weak
+                # and DA is persistent.
                 if self._ml_first_da_gate(probs, da_label):
                     self.posterior = self._make_da_probs(da_label)
 
