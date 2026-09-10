@@ -98,9 +98,9 @@ DA_OTHER_CONFIDENCE = (1.0 - DA_LABEL_CONFIDENCE) / 2  # 0.04   # split equally 
 DA_PERSISTENCE_STREAK    = 3       # DA must persist this many samples before being trusted
 DA_BLOOD_LOW_CONFIDENCE  = 0.75    # unused now: DA blood is unconditional (V6 rule)
 ML_STABILITY_STREAK      = 4       # raw GRU must predict same class for this many samples
-ML_STABILITY_MEAN_CONF   = 0.72    # mean raw confidence during that stable run must exceed this
-ML_STABILITY_PEAK_CONF   = 0.80    # AND the peak raw confidence in the run must exceed this
-ML_STABILITY_CONF_RANGE  = 0.15    # AND the confidence range (max-min) must stay under this
+ML_STABILITY_MEAN_CONF   = 0.70    # mean raw confidence during that stable run must exceed this
+ML_STABILITY_PEAK_CONF   = 0.75    # AND the peak raw confidence in the run must exceed this
+ML_STABILITY_CONF_RANGE  = 0.25    # AND the confidence range (max-min) must stay under this
 
 # ── Initial posterior (2-class) ──
 # Blood is NEVER in the 2-class posterior. These 3-class constants are kept
@@ -1095,6 +1095,32 @@ def process_file(filepath: Path,
             print(f"    Harmful (DA right, ML wrong): {harmful_overrides}")
             print(f"    Override Precision: {override_prec:.4f}")
             print(f"    Override Recall:    {override_rec:.4f}  (of {da_cw_errors} DA clot/wall errors)")
+
+            # ── Direction breakdown (Option B diagnostic) ──
+            # An override is characterised by (DA_class -> ML_class). For each
+            # direction we print how many were correct vs harmful. If one
+            # direction is consistently good and the other consistently bad,
+            # we can gate them asymmetrically.
+            def _dir_stats(da_from, ml_to, name):
+                mask = override_mask & (da_valid == da_from) & (ml_valid == ml_to)
+                n = int(mask.sum())
+                if n == 0:
+                    return f"    {name:<20} n=0"
+                correct = int((ml_valid[mask] == gt_valid[mask]).sum())
+                harmful = int((da_valid[mask] == gt_valid[mask]).sum())
+                prec = correct / n if n else 0.0
+                return (f"    {name:<20} n={n:6d}  correct={correct:6d}  "
+                        f"harmful={harmful:6d}  prec={prec:.3f}")
+
+            print(f"\n  Override direction breakdown ({study_name}):")
+            print(_dir_stats(1, 2, "clot -> wall"))   # DA said clot, ML said wall
+            print(_dir_stats(2, 1, "wall -> clot"))   # DA said wall, ML said clot
+            # Overrides against blood are technically impossible in V9 (DA=blood
+            # is hard-emitted), but include for safety in case of data quirks:
+            n_blood_dir = int((override_mask & ((da_valid == 0) | (ml_valid == 0))).sum())
+            if n_blood_dir > 0:
+                print(f"    {'(blood involved)':<20} n={n_blood_dir:6d}  "
+                      "(unexpected under V9 policy)")
         else:
             print(f"\n  No overrides in {study_name}")
 
