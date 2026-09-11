@@ -45,10 +45,19 @@ import pandas as pd
 
 # ── Config ───────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SOURCE_DIR = Path(
+# IMPORTANT: the source has TWO folders with the same 183 filenames but
+# different content:
+#   training/  → blanked version (unlabeled regions flattened to baseline).
+#                Use for TRAINING so the model only learns from labeled events.
+#   testing/   → raw version (real signal preserved).
+#                Use for INFERENCE / TESTING so the model sees the real waveform.
+# Train files must come from training/, test files must come from testing/.
+SOURCE_ROOT = Path(
     r"C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working"
-    r"\Ronald Kurnik\19August2026\processedResults\training"
+    r"\Ronald Kurnik\19August2026\processedResults"
 )
+SOURCE_TRAIN_DIR = SOURCE_ROOT / "training"  # blanked, for training_data/
+SOURCE_TEST_DIR = SOURCE_ROOT / "testing"    # raw, for test_data/
 INVENTORY_CSV = PROJECT_ROOT / "analysis_data_drift" / "data_inventory_183.csv"
 
 TRAIN_DIR = PROJECT_ROOT / "training_data"
@@ -107,12 +116,12 @@ def clear_dir(d: Path) -> int:
     return n
 
 
-def copy_files(stems: list[str], dst: Path) -> tuple[int, int]:
-    """Copy each stem from SOURCE_DIR to dst. Returns (n_copied, n_missing)."""
+def copy_files(stems: list[str], dst: Path, src_dir: Path) -> tuple[int, int]:
+    """Copy each stem from src_dir to dst. Returns (n_copied, n_missing)."""
     dst.mkdir(parents=True, exist_ok=True)
     n_ok, n_miss = 0, 0
     for stem in stems:
-        src_file = SOURCE_DIR / f"{stem}.parquet"
+        src_file = src_dir / f"{stem}.parquet"
         if not src_file.exists():
             print(f"  WARNING: source missing: {src_file.name}")
             n_miss += 1
@@ -246,12 +255,12 @@ def main():
     print(f"  cleared {n_removed_train} old files from training_data/")
     print(f"  cleared {n_removed_test} old files from test_data/")
 
-    print("\nCopying files into training_data/ ...")
-    n_train_ok, n_train_miss = copy_files(train_stems, TRAIN_DIR)
+    print("\nCopying files into training_data/ (source: training/, blanked) ...")
+    n_train_ok, n_train_miss = copy_files(train_stems, TRAIN_DIR, SOURCE_TRAIN_DIR)
     print(f"  train: {n_train_ok} copied, {n_train_miss} missing")
 
-    print("Copying files into test_data/ ...")
-    n_test_ok, n_test_miss = copy_files(test_stems, TEST_DIR)
+    print("Copying files into test_data/ (source: testing/, raw signal) ...")
+    n_test_ok, n_test_miss = copy_files(test_stems, TEST_DIR, SOURCE_TEST_DIR)
     print(f"  test:  {n_test_ok} copied, {n_test_miss} missing")
 
     # ── Write manifest ──
@@ -294,7 +303,8 @@ def main():
     out("\n" + "=" * 78)
     out(f"TRAIN/TEST SPLIT SUMMARY  (seed={SEED})")
     out("=" * 78)
-    out(f"Source directory : {SOURCE_DIR}")
+    out(f"Train source dir : {SOURCE_TRAIN_DIR}")
+    out(f"Test  source dir : {SOURCE_TEST_DIR}")
     out(f"Target test count: {TARGET_TEST_N}")
     out(f"Pinned test files: {len(pinned_test_stems)}  (existing workspace test set)")
     out(f"Actual train / test: {len(train_stems)} / {len(test_stems)}")
