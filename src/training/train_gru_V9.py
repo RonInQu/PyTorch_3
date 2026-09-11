@@ -577,12 +577,12 @@ def main():
     print("="*70)
     print(f"Global best F1-macro: {best_global_f1:.4f} (Seed {best_seed})")
 
-    # ── Auto-save versioned snapshot ──
+    # ── Auto-save versioned snapshot (V9-specific saver) ──
     try:
-        from src.data.save_version import save_version
-        save_version(f1=best_global_f1, note=f"V9 2-class best seed {best_seed}")
+        from src.data.save_version_V9 import save_version_v9
+        save_version_v9(f1=best_global_f1, note=f"V9 2-class best seed {best_seed}")
     except Exception as e:
-        print(f"(save_version skipped: {e})")
+        print(f"(save_version_v9 skipped: {e})")
 
 
 if __name__ == "__main__":
