@@ -48,13 +48,10 @@ def save_version_v9(
     from src.models.gru_torch_V9 import (
         FEATURE_SET, SEQ_LEN, active_dim, dim_str,
         WINDOW_SEC, REPORT_INTERVAL_MS, TEMPERATURE,
-        GRU_OVERRIDE_THRD_CLOT, GRU_OVERRIDE_THRD_WALL,
-        EMA_BLOOD_PRIOR_HISTORY, EMA_EXIT_TO_BLOOD_HISTORY,
-        EMA_SAME_CLASS_HISTORY, EMA_CROSS_CLASS_HISTORY,
+        EMA_HISTORY,
         DA_LABEL_CONFIDENCE,
-        INIT_BLOOD_PROB, INIT_CLOT_PROB, INIT_WALL_PROB,
         ML_STABILITY_STREAK, ML_STABILITY_MEAN_CONF,
-        ML_STABILITY_PEAK_CONF, ML_STABILITY_CONF_RANGE,
+        ML_STABILITY_CONF_RANGE,
         SCALER_PATH, MODEL_PATH,
     )
     from src.training.train_gru_V9 import (
@@ -150,20 +147,14 @@ def save_version_v9(
 
     lines.append("=== INFERENCE CONFIG (V9) ===")
     lines.append(f"Temperature:           {TEMPERATURE}")
-    lines.append(f"GRU override clot:     {GRU_OVERRIDE_THRD_CLOT}")
-    lines.append(f"GRU override wall:     {GRU_OVERRIDE_THRD_WALL}")
     lines.append(f"DA label confidence:   {DA_LABEL_CONFIDENCE}")
-    lines.append(f"EMA blood prior:       {EMA_BLOOD_PRIOR_HISTORY}")
-    lines.append(f"EMA exit to blood:     {EMA_EXIT_TO_BLOOD_HISTORY}")
-    lines.append(f"EMA same class:        {EMA_SAME_CLASS_HISTORY}")
-    lines.append(f"EMA cross class:       {EMA_CROSS_CLASS_HISTORY}")
-    lines.append(f"Init posterior (3v):   [{INIT_BLOOD_PROB}, {INIT_CLOT_PROB}, {INIT_WALL_PROB}]")
+    lines.append(f"EMA history:           {EMA_HISTORY}")
+    lines.append(f"Init posterior (2c):   [0.65, 0.35]  (clot, wall)")
     lines.append(f"Report interval ms:    {REPORT_INTERVAL_MS}")
     lines.append("")
     lines.append("--- V9 ML-override stability gate ---")
     lines.append(f"streak:      {ML_STABILITY_STREAK}   (raw GRU same class for N samples)")
     lines.append(f"mean_conf:   {ML_STABILITY_MEAN_CONF}   (mean raw conf over run)")
-    lines.append(f"peak_conf:   {ML_STABILITY_PEAK_CONF}   (peak raw conf in run)")
     lines.append(f"conf_range:  {ML_STABILITY_CONF_RANGE}   (max - min conf over run)")
     lines.append("")
 

@@ -55,61 +55,39 @@ SEQ_LEN = 8
 WINDOW_SEC = 5.0
 REPORT_INTERVAL_MS = 200
 
-GRU_OVERRIDE_THRD_CLOT = 0.92 #0.80
-GRU_OVERRIDE_THRD_WALL = 0.97 #0.92
+# Temperature scaling for softmax (T=1 = raw calibrated logits, T>1 softens).
+# V9 keeps raw logits: stability gate already discounts single-sample spikes,
+# so softening at the softmax fights the gate rather than helping it.
+TEMPERATURE = 1.0
 
-# Temperature scaling for softmax (T>1 = less confident, T=1 = no change)
-TEMPERATURE = 1.5
-
-# ── Posterior EMA (exponential moving average) blending weights ──
-# Controls how fast the smoothed posterior responds to new GRU outputs.
+# ── Posterior EMA (single smoothing rate) ──
 # alpha_history = weight on previous posterior, alpha_new = weight on new probs.
-# Higher alpha_history → slower/more stable; higher alpha_new → faster/more reactive.
-EMA_BLOOD_PRIOR_HISTORY = 0.78   # when prior state is blood: moderate reactivity
-EMA_BLOOD_PRIOR_NEW     = 1 - EMA_BLOOD_PRIOR_HISTORY
-EMA_EXIT_TO_BLOOD_HISTORY = 0.35 # leaving clot/wall back to blood: fast transition
-EMA_EXIT_TO_BLOOD_NEW     = 1 - EMA_EXIT_TO_BLOOD_HISTORY
-EMA_SAME_CLASS_HISTORY  = 0.97   # non-blood transitions: unified rate (no ratchet)
-EMA_SAME_CLASS_NEW      = 1 - EMA_SAME_CLASS_HISTORY
-EMA_CROSS_CLASS_HISTORY = 0.99   # same as SAME_CLASS — eliminates asymmetric lock-in
-EMA_CROSS_CLASS_NEW     = 1 - EMA_CROSS_CLASS_HISTORY
+# One rate for all transitions — asymmetric rates gave no measurable benefit
+# and created hidden lock-in behavior.
+EMA_HISTORY = 0.98
+EMA_NEW     = 1 - EMA_HISTORY
 
 # ── DA (device-assisted) label override confidence ──
-# V9 rule: keep ML as the default decision maker. DA is only allowed to win
-# when the raw model is weak and the DA label persists across several reports.
-DA_LABEL_CONFIDENCE = 0.97 #0.92   # confidence assigned to the DA-labeled class
-DA_OTHER_CONFIDENCE = (1.0 - DA_LABEL_CONFIDENCE) / 2  # 0.04   # split equally among the other two classes
+# V9 rule: DA wins clot/wall by default. ML overrides only through the
+# stability gate below.
+DA_LABEL_CONFIDENCE = 0.97
+DA_OTHER_CONFIDENCE = 1.0 - DA_LABEL_CONFIDENCE   # 2-class: goes to the other class
 
-# V9 gating thresholds (calibrated for the 2-class model)
+# ── V9 ML-override stability gate ──
 # ML must present a STABLE, CONFIDENT, SUSTAINED disagreement before it is
 # allowed to override DA on clot/wall. Single-sample confidence spikes are not
-# enough. The 2-class model's raw softmax peaks at lower values than the old
-# 3-class model because balanced classes cap the max output around 0.75–0.85
-# on test data. Setting ML_STABILITY_MEAN_CONF too high blocks all ML overrides.
-#
-# Additional steadiness checks (added after observing 9CB4378D failure):
-#   - peak conf floor: the max raw confidence in the window must exceed
-#     ML_STABILITY_PEAK_CONF. On 9CB the model oscillates around 0.60–0.75
-#     without ever getting truly confident — this filters those out.
-#   - conf range cap: max-min of raw confidence in the window must stay
-#     under ML_STABILITY_CONF_RANGE. This rejects "argmax-stable but confidence
-#     oscillating" runs (9CB pattern) while preserving "argmax-stable and
-#     confidence steady high" runs (5DFFDF16 pattern).
-DA_PERSISTENCE_STREAK    = 3       # DA must persist this many samples before being trusted
-DA_BLOOD_LOW_CONFIDENCE  = 0.75    # unused now: DA blood is unconditional (V6 rule)
-ML_STABILITY_STREAK      = 4       # raw GRU must predict same class for this many samples
-ML_STABILITY_MEAN_CONF   = 0.70    # mean raw confidence during that stable run must exceed this
-ML_STABILITY_PEAK_CONF   = 0.75    # AND the peak raw confidence in the run must exceed this
-ML_STABILITY_CONF_RANGE  = 0.25    # AND the confidence range (max-min) must stay under this
-
-# ── Initial posterior (2-class) ──
-# Blood is NEVER in the 2-class posterior. These 3-class constants are kept
-# only so downstream diagnostic code that references them does not break.
-# The actual initialization in LiveClotDetector uses [0.65, 0.35] — the
-# approximate clot/wall class prior from training data.
-INIT_BLOOD_PROB = 0.0     # legacy, unused by the 2-class detector
-INIT_CLOT_PROB  = 0.65    # legacy, matches training clot prior
-INIT_WALL_PROB  = 0.35    # legacy, matches training wall prior
+# enough. Three checks (down from four — removed PEAK_CONF because it was
+# redundant with MEAN_CONF given the CONF_RANGE cap, and its 0.75 floor was
+# above the softmax's practical ceiling when TEMPERATURE was 1.5):
+#   1. streak      : raw GRU argmax stable for N samples
+#   2. mean_conf   : mean raw confidence over that run ≥ threshold
+#   3. conf_range  : max-min of raw confidence over run ≤ threshold
+#                    (rejects "argmax-stable but confidence oscillating" runs
+#                    like 9CB4378D while preserving steady-high runs like
+#                    5DFFDF16).
+ML_STABILITY_STREAK      = 4
+ML_STABILITY_MEAN_CONF   = 0.70
+ML_STABILITY_CONF_RANGE  = 0.25
 
 # Feature set selection
 FEATURE_SET = "clot_wall_focused"
@@ -691,8 +669,6 @@ class LiveClotDetector:
         # Blood is NEVER in this posterior; blood is emitted only when DA says blood.
         self.posterior = np.array([0.65, 0.35], dtype=np.float32)
         self.feat_history = deque(maxlen=SEQ_LEN)
-        self.da_last_label = None
-        self.da_streak = 0
         # Raw-prediction stability tracking
         # raw_last_idx uses the 2-class model index (0=clot, 1=wall).
         self.raw_last_idx = None
@@ -716,36 +692,10 @@ class LiveClotDetector:
         namespace; map to 2-class index (0=clot, 1=wall).
         """
         da_idx = 0 if da_label == 1 else 1
-        p = np.array([DA_OTHER_CONFIDENCE * 2, DA_OTHER_CONFIDENCE * 2], dtype=np.float32)
-        # Use DA_LABEL_CONFIDENCE on the DA class, with the remainder on the other.
+        p = np.empty(2, dtype=np.float32)
         p[da_idx] = DA_LABEL_CONFIDENCE
-        p[1 - da_idx] = 1.0 - DA_LABEL_CONFIDENCE
+        p[1 - da_idx] = DA_OTHER_CONFIDENCE
         return p
-
-    def _make_da_probs(self, da_label):
-        """Legacy 3-vec builder kept for the final emit path when DA overrides ML.
-        Returns [P(blood), P(clot), P(wall)].
-        """
-        p = np.array([0.0, 0.0, 0.0], dtype=np.float32)
-        p[da_label] = DA_LABEL_CONFIDENCE
-        # Split remaining probability across the two non-DA classes.
-        other = (1.0 - DA_LABEL_CONFIDENCE) / 2
-        for i in range(3):
-            if i != da_label:
-                p[i] = other
-        return p
-
-    def _update_da_streak(self, da_label):
-        """Track persistence of the DA label across consecutive reports."""
-        if da_label is None:
-            self.da_last_label = None
-            self.da_streak = 0
-            return
-        if self.da_last_label == da_label:
-            self.da_streak += 1
-        else:
-            self.da_last_label = da_label
-            self.da_streak = 1
 
     def _update_raw_stability(self, raw_probs_2c):
         """Track how many consecutive samples the raw GRU has predicted the same
@@ -770,9 +720,7 @@ class LiveClotDetector:
           1. Raw GRU has predicted the same non-DA 2-class label the whole time
              (argmax stability).
           2. Mean raw confidence  >= ML_STABILITY_MEAN_CONF.
-          3. Peak raw confidence  >= ML_STABILITY_PEAK_CONF (never gets truly
-             confident? probably wrong; block).
-          4. Confidence range (max - min) <= ML_STABILITY_CONF_RANGE (steady
+          3. Confidence range (max - min) <= ML_STABILITY_CONF_RANGE (steady
              confidence, not oscillating; filters 9CB4378D-style failures where
              the argmax is stable but the confidence swings wildly).
 
@@ -791,12 +739,9 @@ class LiveClotDetector:
 
         conf_arr = np.asarray(self.raw_conf_window, dtype=np.float32)
         mean_conf = float(conf_arr.mean())
-        peak_conf = float(conf_arr.max())
         conf_range = float(conf_arr.max() - conf_arr.min())
 
         if mean_conf < ML_STABILITY_MEAN_CONF:
-            return False
-        if peak_conf < ML_STABILITY_PEAK_CONF:
             return False
         if conf_range > ML_STABILITY_CONF_RANGE:
             return False
@@ -848,21 +793,10 @@ class LiveClotDetector:
         self.raw_probs = np.array([0.0, float(probs_2c[0]), float(probs_2c[1])],
                                   dtype=np.float32)
 
-        # ── Step 2: EMA blending (2-class) ──
-        # No blood transitions — model only distinguishes clot vs wall.
-        prior_idx = int(np.argmax(self.posterior))   # 0=clot, 1=wall
-        new_idx   = int(np.argmax(probs_2c))
-        if new_idx == prior_idx:
-            alpha_history = EMA_SAME_CLASS_HISTORY
-            alpha_new     = EMA_SAME_CLASS_NEW
-        else:
-            alpha_history = EMA_CROSS_CLASS_HISTORY
-            alpha_new     = EMA_CROSS_CLASS_NEW
-
-        self.posterior = alpha_history * self.posterior + alpha_new * probs_2c
+        # ── Step 2: EMA blending (2-class, single rate) ──
+        self.posterior = EMA_HISTORY * self.posterior + EMA_NEW * probs_2c
 
         # ── Step 3: DA guardrail ──
-        self._update_da_streak(da_label)
         self._update_raw_stability(probs_2c)
 
         if da_label is not None:
