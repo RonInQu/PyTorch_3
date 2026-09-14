@@ -52,6 +52,10 @@ def save_version_v9(
         DA_LABEL_CONFIDENCE,
         ML_STABILITY_STREAK, ML_STABILITY_MEAN_CONF,
         ML_STABILITY_CONF_RANGE,
+        USE_OVERRIDE_POLICY_CONFIRM,
+        OVERRIDE_POLICY_BUNDLE_PATH,
+        OVERRIDE_POLICY_EXTRA_MARGIN,
+        OVERRIDE_POLICY_REQUIRE_AGREE_WITH_RAW,
         SCALER_PATH, MODEL_PATH,
     )
     from src.training.train_gru_V9 import (
@@ -156,6 +160,12 @@ def save_version_v9(
     lines.append(f"streak:      {ML_STABILITY_STREAK}   (raw GRU same class for N samples)")
     lines.append(f"mean_conf:   {ML_STABILITY_MEAN_CONF}   (mean raw conf over run)")
     lines.append(f"conf_range:  {ML_STABILITY_CONF_RANGE}   (max - min conf over run)")
+    lines.append("")
+    lines.append("--- V9.1 hybrid override confirmation gate ---")
+    lines.append(f"enabled:          {USE_OVERRIDE_POLICY_CONFIRM}")
+    lines.append(f"policy bundle:    {OVERRIDE_POLICY_BUNDLE_PATH}")
+    lines.append(f"extra margin:     {OVERRIDE_POLICY_EXTRA_MARGIN}")
+    lines.append(f"agree with raw:   {OVERRIDE_POLICY_REQUIRE_AGREE_WITH_RAW}")
     lines.append("")
 
     lines.append(f"=== TRAINING SPLIT ({len(train_studies)} studies) ===")

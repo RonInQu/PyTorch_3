@@ -18,6 +18,11 @@ Stability gate (ML override rights):
   ML_STABILITY_STREAK consecutive samples AND the mean raw confidence over
   that stable run must exceed ML_STABILITY_MEAN_CONF.
 
+    Optional V9.1 hybrid gate:
+    After the raw-stability gate passes, an auxiliary real-time override policy
+    (trained from DA-vs-GT disagreement windows) can be required to confirm the
+    same non-DA class at high confidence before an override is allowed.
+
   Thresholds are tuned for the 2-class model, which peaks at lower confidence
   than a 3-class model (typical peak ~0.75–0.85 on test data vs ~0.95 for
   the 3-class variant). Setting the mean-conf floor too high blocks all ML
@@ -589,6 +594,16 @@ SAVE_CSV = False       # Set True to save detection_results .csv files
 TEST_DATA_DIR = PROJECT_ROOT / ("test_data_denoised" if USE_DENOISED else "test_data")
 OUTPUT_FOLDER = PROJECT_ROOT / "inference_deploy" / "Results"
 
+# ── Optional V9.1 hybrid confirmation gate ──
+# If enabled, ML override is allowed only when BOTH:
+#   1) the native V9 raw-stability gate passes, and
+#   2) the learned DA-override policy agrees with the same non-DA class at
+#      confidence >= (policy_threshold + OVERRIDE_POLICY_EXTRA_MARGIN).
+USE_OVERRIDE_POLICY_CONFIRM = True
+OVERRIDE_POLICY_BUNDLE_PATH = PROJECT_ROOT / "analysis_data_drift" / "override_model_v1" / "override_policy_v1.joblib"
+OVERRIDE_POLICY_EXTRA_MARGIN = 0.08
+OVERRIDE_POLICY_REQUIRE_AGREE_WITH_RAW = True
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # ────────────────────────────────────────────────
@@ -678,6 +693,92 @@ class LiveClotDetector:
         # [0.0, P(clot), P(wall)]. Blood slot is always 0 because model is 2-class.
         self.raw_probs = np.array([0.0, 0.65, 0.35], dtype=np.float32)
 
+        # Optional learned override-policy confirmation model.
+        self.override_policy_enabled = False
+        self.override_policy_model = None
+        self.override_policy_threshold = 0.50
+        self.override_policy_last_pred = None
+        self.override_policy_last_conf = np.nan
+        if USE_OVERRIDE_POLICY_CONFIRM:
+            self._load_override_policy()
+
+    def _load_override_policy(self):
+        """Load learned DA-override policy bundle if available and compatible."""
+        if not OVERRIDE_POLICY_BUNDLE_PATH.exists():
+            warnings.warn(
+                f"Override policy bundle missing ({OVERRIDE_POLICY_BUNDLE_PATH}); "
+                "falling back to native V9 stability gate only."
+            )
+            return
+
+        try:
+            bundle = joblib.load(OVERRIDE_POLICY_BUNDLE_PATH)
+            model = bundle.get("model")
+            feature_cols = bundle.get("feature_cols", [])
+            threshold = float(bundle.get("best_threshold", 0.50))
+
+            if model is None:
+                warnings.warn("Override policy bundle has no model; disabled.")
+                return
+
+            if len(feature_cols) != active_dim:
+                warnings.warn(
+                    "Override policy feature count does not match active_dim "
+                    f"({len(feature_cols)} != {active_dim}); disabled."
+                )
+                return
+
+            self.override_policy_model = model
+            self.override_policy_threshold = threshold
+            self.override_policy_enabled = True
+            print(
+                "  Override policy confirm: enabled "
+                f"(thr={self.override_policy_threshold:.2f}, +margin={OVERRIDE_POLICY_EXTRA_MARGIN:.2f})"
+            )
+        except Exception as exc:
+            warnings.warn(f"Failed loading override policy bundle: {exc}")
+
+    def _override_policy_confirms(self, active_feats, da_label):
+        """Second gate for override: learned DA-error policy must agree.
+
+        Returns True only when the policy predicts the same non-DA class as the
+        raw GRU disagreement and does so at high confidence.
+        """
+        if not self.override_policy_enabled:
+            return True
+        if da_label not in (1, 2):
+            return False
+
+        x = np.asarray(active_feats, dtype=np.float32).reshape(1, -1)
+        if x.shape[1] != active_dim or not np.all(np.isfinite(x)):
+            return False
+
+        da_idx = 0 if da_label == 1 else 1
+        da_onehot = np.zeros((1, 2), dtype=np.float32)
+        da_onehot[0, da_idx] = 1.0
+        x_all = np.hstack([x, da_onehot])
+
+        probs = self.override_policy_model.predict_proba(x_all)[0]
+        pred_idx = int(np.argmax(probs))
+        conf = float(np.max(probs))
+        self.override_policy_last_pred = pred_idx
+        self.override_policy_last_conf = conf
+
+        # Must disagree with DA to justify an override.
+        if pred_idx == da_idx:
+            return False
+
+        # Optional consistency check: learned policy and raw GRU must propose
+        # the same class direction for the override.
+        if OVERRIDE_POLICY_REQUIRE_AGREE_WITH_RAW and self.raw_last_idx is not None:
+            if pred_idx != self.raw_last_idx:
+                return False
+
+        req_conf = min(0.999, self.override_policy_threshold + OVERRIDE_POLICY_EXTRA_MARGIN)
+        if conf < req_conf:
+            return False
+        return True
+
     def _emit(self):
         """Convert the 2-class posterior to the 3-vec [blood, clot, wall] format
         that downstream code expects. Blood is 0 here because this method is only
@@ -759,7 +860,8 @@ class LiveClotDetector:
           3. DA guardrail:
              - da_label == 0  → hard blood emit [1,0,0], clear state, return
              - da_label ∈ {1,2} → DA wins by default; ML overrides only when the
-               raw stability gate is satisfied
+                             raw stability gate is satisfied; optional learned policy can
+                             require a second confirmation before override is allowed
              - da_label is None → emit posterior directly
           4. Final safety snap: on da_label ∈ {1,2}, if posterior drifted away
              from DA and gate not satisfied, snap posterior to DA.
@@ -811,14 +913,22 @@ class LiveClotDetector:
             elif da_label in (1, 2):
                 # DA says clot/wall → DA wins by default. ML only takes over
                 # with stable, sustained, confident disagreement.
-                if not self._ml_should_override_da(da_label):
+                can_override = self._ml_should_override_da(da_label)
+                if can_override and USE_OVERRIDE_POLICY_CONFIRM:
+                    can_override = self._override_policy_confirms(active_feats, da_label)
+
+                if not can_override:
                     self.posterior = self._make_da_probs_2class(da_label)
 
         # ── Step 4: Final safety check ──
         if da_label in (1, 2):
             da_idx_2c = 0 if da_label == 1 else 1
             final_idx = int(np.argmax(self.posterior))
-            if final_idx != da_idx_2c and not self._ml_should_override_da(da_label):
+            can_override = self._ml_should_override_da(da_label)
+            if can_override and USE_OVERRIDE_POLICY_CONFIRM:
+                can_override = self._override_policy_confirms(active_feats, da_label)
+
+            if final_idx != da_idx_2c and not can_override:
                 self.posterior = self._make_da_probs_2class(da_label)
 
         return self._emit()
