@@ -1071,8 +1071,15 @@ def process_file(filepath: Path,
         da = da_labels.values.astype(int)
         full_times = time_ms / 1000.0
 
-        interp_ml = np.interp(full_times, results_df['time'], results_df['prediction'])
-        interp_ml = np.round(interp_ml).astype(int)
+        # Categorical labels must be aligned with stepwise indexing, not linear
+        # interpolation. Linear interpolation between class IDs fabricates
+        # non-existent transitions and inflates override counts.
+        ml_report_times = results_df['time'].to_numpy(dtype=np.float64)
+        ml_report_preds = results_df['prediction'].to_numpy(dtype=np.int16)
+
+        idx_full = np.searchsorted(ml_report_times, full_times, side='right') - 1
+        idx_full = np.clip(idx_full, 0, len(ml_report_preds) - 1)
+        interp_ml = ml_report_preds[idx_full]
 
         # Filter out unlabeled samples (label == -1) before metrics
         valid = (gt >= 0)
@@ -1094,8 +1101,10 @@ def process_file(filepath: Path,
             ax.scatter(results_df['time'][mask], results_df['resistance'][mask],
                        c=colors[lbl], s=5, label=lbl_names[lbl], alpha=0.85)
 
-        ml_da = np.interp(results_df['time'], full_times, da)
-        ml_da = np.round(ml_da).astype(int)
+        # For diagnostic shading at report points, use nearest DA sample.
+        idx_rep = np.searchsorted(full_times, ml_report_times, side='left')
+        idx_rep = np.clip(idx_rep, 0, len(da) - 1)
+        ml_da = da[idx_rep]
         diff = (results_df['prediction'].values != ml_da)
         diff_diff = np.diff(diff.astype(int))
         starts = np.where(diff_diff == 1)[0] + 1
@@ -1146,12 +1155,15 @@ def process_file(filepath: Path,
         print(f"Improvement: Acc {accuracy_score(gt_valid, ml_valid)-accuracy_score(gt_valid, da_valid):+.4f}   "
               f"F1 {f1_score(gt_valid, ml_valid, average='macro')-f1_score(gt_valid, da_valid, average='macro'):+.4f}")
 
-        # Override analysis
-        override_mask = (ml_valid != da_valid)
-        n_overrides = override_mask.sum()
+        # Override analysis (clot/wall only)
+        # Exclude any sample where GT, DA, or ML is blood (0) when judging
+        # override usefulness for clot-vs-wall behavior.
+        cw_mask = (gt_valid != 0) & (da_valid != 0) & (ml_valid != 0)
+        override_mask = cw_mask & (ml_valid != da_valid)
+        n_overrides = int(override_mask.sum())
         if n_overrides > 0:
-            correct_overrides = ((ml_valid[override_mask] == gt_valid[override_mask]).sum())
-            harmful_overrides = ((da_valid[override_mask] == gt_valid[override_mask]).sum())
+            correct_overrides = int((ml_valid[override_mask] == gt_valid[override_mask]).sum())
+            harmful_overrides = int((da_valid[override_mask] == gt_valid[override_mask]).sum())
             override_prec = correct_overrides / n_overrides
 
             da_cw_errors = ((da_valid != gt_valid) & ((gt_valid == 1) | (gt_valid == 2))).sum()
@@ -1164,7 +1176,7 @@ def process_file(filepath: Path,
             print(f"    Override Precision: {override_prec:.4f}")
             print(f"    Override Recall:    {override_rec:.4f}  (of {da_cw_errors} DA clot/wall errors)")
 
-            # ── Direction breakdown (Option B diagnostic) ──
+            # ── Direction breakdown (clot/wall-only) ──
             # An override is characterised by (DA_class -> ML_class). For each
             # direction we print how many were correct vs harmful. If one
             # direction is consistently good and the other consistently bad,
@@ -1183,12 +1195,11 @@ def process_file(filepath: Path,
             print(f"\n  Override direction breakdown ({study_name}):")
             print(_dir_stats(1, 2, "clot -> wall"))   # DA said clot, ML said wall
             print(_dir_stats(2, 1, "wall -> clot"))   # DA said wall, ML said clot
-            # Overrides against blood are technically impossible in V9 (DA=blood
-            # is hard-emitted), but include for safety in case of data quirks:
-            n_blood_dir = int((override_mask & ((da_valid == 0) | (ml_valid == 0))).sum())
+            # Track excluded blood-involved disagreements for transparency.
+            n_blood_dir = int(((ml_valid != da_valid) & ~cw_mask).sum())
             if n_blood_dir > 0:
                 print(f"    {'(blood involved)':<20} n={n_blood_dir:6d}  "
-                      "(unexpected under V9 policy)")
+                      "(excluded from override metrics)")
         else:
             print(f"\n  No overrides in {study_name}")
 
