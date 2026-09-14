@@ -594,15 +594,19 @@ SAVE_CSV = False       # Set True to save detection_results .csv files
 TEST_DATA_DIR = PROJECT_ROOT / ("test_data_denoised" if USE_DENOISED else "test_data")
 OUTPUT_FOLDER = PROJECT_ROOT / "inference_deploy" / "Results"
 
-# ── Optional V9.1 hybrid confirmation gate ──
+# ── Optional V9.2 hybrid confirmation gate ──
 # If enabled, ML override is allowed only when BOTH:
 #   1) the native V9 raw-stability gate passes, and
 #   2) the learned DA-override policy agrees with the same non-DA class at
 #      confidence >= (policy_threshold + OVERRIDE_POLICY_EXTRA_MARGIN).
 USE_OVERRIDE_POLICY_CONFIRM = True
 OVERRIDE_POLICY_BUNDLE_PATH = PROJECT_ROOT / "analysis_data_drift" / "override_model_v1" / "override_policy_v1.joblib"
-OVERRIDE_POLICY_EXTRA_MARGIN = 0.08
+OVERRIDE_POLICY_EXTRA_MARGIN = 0.12
 OVERRIDE_POLICY_REQUIRE_AGREE_WITH_RAW = True
+
+# Asymmetric safety policy (V9.2): allow only DA clot -> ML wall direction.
+# 3-class labels: blood=0, clot=1, wall=2.
+ALLOW_ONLY_CLOT_TO_WALL_OVERRIDE = True
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -749,6 +753,14 @@ class LiveClotDetector:
         if da_label not in (1, 2):
             return False
 
+        # V9.2 asymmetric policy: only allow clot -> wall overrides.
+        # DA=clot means 2-class da_idx=0 and override target must be wall idx=1.
+        if ALLOW_ONLY_CLOT_TO_WALL_OVERRIDE:
+            if da_label != 1:
+                return False
+            if self.raw_last_idx is not None and self.raw_last_idx != 1:
+                return False
+
         x = np.asarray(active_feats, dtype=np.float32).reshape(1, -1)
         if x.shape[1] != active_dim or not np.all(np.isfinite(x)):
             return False
@@ -766,6 +778,9 @@ class LiveClotDetector:
 
         # Must disagree with DA to justify an override.
         if pred_idx == da_idx:
+            return False
+
+        if ALLOW_ONLY_CLOT_TO_WALL_OVERRIDE and not (da_idx == 0 and pred_idx == 1):
             return False
 
         # Optional consistency check: learned policy and raw GRU must propose
@@ -831,8 +846,17 @@ class LiveClotDetector:
         if da_label not in (1, 2):
             return False
         da_idx_2c = 0 if da_label == 1 else 1
+
+        # V9.2 asymmetric policy: only permit clot -> wall overrides.
+        if ALLOW_ONLY_CLOT_TO_WALL_OVERRIDE and da_label != 1:
+            return False
+
         if self.raw_last_idx is None or self.raw_last_idx == da_idx_2c:
             return False
+
+        if ALLOW_ONLY_CLOT_TO_WALL_OVERRIDE and self.raw_last_idx != 1:
+            return False
+
         if self.raw_stable_streak < ML_STABILITY_STREAK:
             return False
         if len(self.raw_conf_window) < ML_STABILITY_STREAK:

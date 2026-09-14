@@ -56,6 +56,7 @@ def save_version_v9(
         OVERRIDE_POLICY_BUNDLE_PATH,
         OVERRIDE_POLICY_EXTRA_MARGIN,
         OVERRIDE_POLICY_REQUIRE_AGREE_WITH_RAW,
+        ALLOW_ONLY_CLOT_TO_WALL_OVERRIDE,
         SCALER_PATH, MODEL_PATH,
     )
     from src.training.train_gru_V9 import (
@@ -161,11 +162,12 @@ def save_version_v9(
     lines.append(f"mean_conf:   {ML_STABILITY_MEAN_CONF}   (mean raw conf over run)")
     lines.append(f"conf_range:  {ML_STABILITY_CONF_RANGE}   (max - min conf over run)")
     lines.append("")
-    lines.append("--- V9.1 hybrid override confirmation gate ---")
+    lines.append("--- V9.2 hybrid override confirmation gate ---")
     lines.append(f"enabled:          {USE_OVERRIDE_POLICY_CONFIRM}")
     lines.append(f"policy bundle:    {OVERRIDE_POLICY_BUNDLE_PATH}")
     lines.append(f"extra margin:     {OVERRIDE_POLICY_EXTRA_MARGIN}")
     lines.append(f"agree with raw:   {OVERRIDE_POLICY_REQUIRE_AGREE_WITH_RAW}")
+    lines.append(f"only clot->wall:  {ALLOW_ONLY_CLOT_TO_WALL_OVERRIDE}")
     lines.append("")
 
     lines.append(f"=== TRAINING SPLIT ({len(train_studies)} studies) ===")
