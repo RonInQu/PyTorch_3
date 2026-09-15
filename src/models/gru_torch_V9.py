@@ -1155,18 +1155,29 @@ def process_file(filepath: Path,
         print(f"Improvement: Acc {accuracy_score(gt_valid, ml_valid)-accuracy_score(gt_valid, da_valid):+.4f}   "
               f"F1 {f1_score(gt_valid, ml_valid, average='macro')-f1_score(gt_valid, da_valid, average='macro'):+.4f}")
 
-        # Override analysis (clot/wall only)
-        # Exclude any sample where GT, DA, or ML is blood (0) when judging
-        # override usefulness for clot-vs-wall behavior.
-        cw_mask = (gt_valid != 0) & (da_valid != 0) & (ml_valid != 0)
-        override_mask = cw_mask & (ml_valid != da_valid)
+        # Override analysis should be measured at emit cadence (200 ms), not
+        # full-rate samples. Full-rate expansion can create timing artifacts
+        # when DA transitions between emits.
+        rep_gt = gt[idx_rep]
+        rep_da = da[idx_rep]
+        rep_ml = ml_report_preds
+
+        # Keep only labeled emit points for analysis.
+        rep_labeled = rep_gt >= 0
+        rep_gt = rep_gt[rep_labeled]
+        rep_da = rep_da[rep_labeled]
+        rep_ml = rep_ml[rep_labeled]
+
+        # Clot/wall-only override metrics.
+        cw_mask = (rep_gt != 0) & (rep_da != 0) & (rep_ml != 0)
+        override_mask = cw_mask & (rep_ml != rep_da)
         n_overrides = int(override_mask.sum())
         if n_overrides > 0:
-            correct_overrides = int((ml_valid[override_mask] == gt_valid[override_mask]).sum())
-            harmful_overrides = int((da_valid[override_mask] == gt_valid[override_mask]).sum())
+            correct_overrides = int((rep_ml[override_mask] == rep_gt[override_mask]).sum())
+            harmful_overrides = int((rep_da[override_mask] == rep_gt[override_mask]).sum())
             override_prec = correct_overrides / n_overrides
 
-            da_cw_errors = ((da_valid != gt_valid) & ((gt_valid == 1) | (gt_valid == 2))).sum()
+            da_cw_errors = int(((rep_da != rep_gt) & ((rep_gt == 1) | (rep_gt == 2))).sum())
             override_rec = correct_overrides / da_cw_errors if da_cw_errors > 0 else 0.0
 
             print(f"\n  Override analysis ({study_name}):")
@@ -1182,12 +1193,12 @@ def process_file(filepath: Path,
             # direction is consistently good and the other consistently bad,
             # we can gate them asymmetrically.
             def _dir_stats(da_from, ml_to, name):
-                mask = override_mask & (da_valid == da_from) & (ml_valid == ml_to)
+                mask = override_mask & (rep_da == da_from) & (rep_ml == ml_to)
                 n = int(mask.sum())
                 if n == 0:
                     return f"    {name:<20} n=0"
-                correct = int((ml_valid[mask] == gt_valid[mask]).sum())
-                harmful = int((da_valid[mask] == gt_valid[mask]).sum())
+                correct = int((rep_ml[mask] == rep_gt[mask]).sum())
+                harmful = int((rep_da[mask] == rep_gt[mask]).sum())
                 prec = correct / n if n else 0.0
                 return (f"    {name:<20} n={n:6d}  correct={correct:6d}  "
                         f"harmful={harmful:6d}  prec={prec:.3f}")
@@ -1196,7 +1207,7 @@ def process_file(filepath: Path,
             print(_dir_stats(1, 2, "clot -> wall"))   # DA said clot, ML said wall
             print(_dir_stats(2, 1, "wall -> clot"))   # DA said wall, ML said clot
             # Track excluded blood-involved disagreements for transparency.
-            n_blood_dir = int(((ml_valid != da_valid) & ~cw_mask).sum())
+            n_blood_dir = int(((rep_ml != rep_da) & ~cw_mask).sum())
             if n_blood_dir > 0:
                 print(f"    {'(blood involved)':<20} n={n_blood_dir:6d}  "
                       "(excluded from override metrics)")
