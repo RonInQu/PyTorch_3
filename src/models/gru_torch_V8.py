@@ -1,13 +1,13 @@
-# gru_torch_V8.py
+# gru_torch_V6.py
 """
-Real-time clot detection — V8
+Real-time clot detection — V6
 Stripped feature set: original 40 + Hjorth mobility, Hjorth complexity, mean abs 2nd derivative, flatness.
 Total features = 57.  No FFT, no sample entropy, no zero-crossing, no transition features.
 
 Modular compute_features(): skips feature groups not needed by the selected FEATURE_SET.
 compute_features_from_array(): batch-mode method for scaler/training (no streaming state).
 
-Feature index map (V8 vs V5):
+Feature index map (V6 vs V5):
   f0-f39:  same as V5 (original 40)
   f40:     Hjorth mobility      (was V5 f44)
   f41:     Hjorth complexity     (was V5 f45)
@@ -71,9 +71,8 @@ EMA_CROSS_CLASS_HISTORY = 0.99   # same as SAME_CLASS — eliminates asymmetric 
 EMA_CROSS_CLASS_NEW     = 1 - EMA_CROSS_CLASS_HISTORY
 
 # ── DA (device-assisted) label override confidence ──
-# V8 change: this confidence is applied only after the smoothed posterior
-# decides that DA should win. The gate itself now uses the posterior, not the
-# raw GRU spike, so the confidence threshold matches the signal we emit.
+# When the device provides a label, we construct a probability vector
+# with this much confidence on the labeled class.
 DA_LABEL_CONFIDENCE = 0.97 #0.92   # confidence assigned to the DA-labeled class
 DA_OTHER_CONFIDENCE = (1.0 - DA_LABEL_CONFIDENCE) / 2  # 0.04   # split equally among the other two classes
 
@@ -665,47 +664,40 @@ class LiveClotDetector:
 
     def _make_da_probs(self, da_label):
         """Build a probability vector heavily favoring the DA-labeled class.
-        In V8 this vector is used after the posterior-based gate decides that
-        DA should take control.
+        Tune DA_LABEL_CONFIDENCE (default 0.92) to control how strongly
+        the device-assisted label overrides the GRU output.
         """
         da_probs = np.array([DA_OTHER_CONFIDENCE] * 3, dtype=np.float32)
         da_probs[da_label] = DA_LABEL_CONFIDENCE
         return da_probs
 
-    def _posterior_should_override_da(self, posterior, da_label, strict=False):
-        """Return True if the smoothed posterior is not confident enough to
-        contradict the DA label.
-
-        V8 change: the confidence gate is based on the EMA-smoothed posterior,
-        not the raw GRU probabilities. That keeps the override decision aligned
-        with the signal that is actually emitted and plotted.
-
-        Tune GRU_OVERRIDE_THRD_CLOT / GRU_OVERRIDE_THRD_WALL to control how
-        easily DA wins over the smoothed model.
-        strict=False: use <=  (pre-EMA-style check, slightly more permissive)
+    def _da_should_override_gru(self, probs, da_label, strict=False):
+        """Return True if the GRU is not confident enough to contradict the DA label.
+        Tune GRU_OVERRIDE_THRD_CLOT / GRU_OVERRIDE_THRD_WALL to control
+        how easily the DA label wins over the GRU prediction.
+        Higher threshold → DA label wins more often.
+        strict=False: use <=  (pre-EMA check, slightly more permissive)
         strict=True:  use <   (post-EMA safety net, slightly less permissive)
         """
-        top_idx = np.argmax(posterior)
-        if top_idx == da_label:
-            return False  # Posterior already agrees with DA
+        gru_top_idx = np.argmax(probs)
+        if gru_top_idx == da_label:
+            return False  # GRU already agrees with DA
         threshold = GRU_OVERRIDE_THRD_CLOT if da_label == 1 else GRU_OVERRIDE_THRD_WALL
         if strict:
-            return posterior[top_idx] < threshold
-        return posterior[top_idx] <= threshold
+            return probs[gru_top_idx] < threshold
+        return probs[gru_top_idx] <= threshold
 
     @torch.no_grad()
     def predict(self, active_feats, da_label=None):
         """
         Run one prediction step.  Returns a 3-element posterior [P(blood), P(clot), P(wall)].
 
-          Pipeline:
-             1. Scale features, build sequence, run GRU(s) → raw probs
-                 (ensemble: average logits across all models before softmax)
-             2. EMA-blend the raw GRU probs into the running posterior
-             3. If DA label present, use the smoothed posterior to decide whether
-                 DA should override the current state
-             4. Post-EMA safety check: force DA label if the posterior still
-                 disagrees and remains below the confidence threshold
+        Pipeline:
+          1. Scale features, build sequence, run GRU(s) → raw probs
+             (ensemble: average logits across all models before softmax)
+          2. If DA label present, optionally override GRU probs
+          3. EMA-blend new probs into the running posterior
+          4. Post-EMA safety check: force DA label if GRU still disagrees
         """
 
         # ── Step 1: Scale features & run GRU(s) ──
@@ -738,7 +730,23 @@ class LiveClotDetector:
 
         prior_idx = np.argmax(self.posterior)  # class the posterior currently favors
 
-        # ── Step 2: EMA blending ──
+        # ── Step 2: DA (device-assisted) label override ──
+        # When the device provides a ground-truth label, trust it unless the
+        # GRU is extremely confident in a different class.
+        if da_label is not None:
+            if da_label == 0:
+                # DA says blood → hard reset: clear history and return certain blood.
+                self.posterior = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+                self.hiddens = [None] * len(self.models)
+                self.feat_history.clear()
+                return self.posterior.copy()
+
+            elif da_label in (1, 2):
+                # DA says clot or wall → override GRU if GRU isn't confident enough
+                if self._da_should_override_gru(probs, da_label):
+                    probs = self._make_da_probs(da_label)
+
+        # ── Step 3: EMA blending ──
         # Blend new probs into the running posterior.  The blend weights depend
         # on what transition is happening, to control responsiveness vs stability.
         #
@@ -768,28 +776,12 @@ class LiveClotDetector:
 
         self.posterior = alpha_history * self.posterior + alpha_new * probs
 
-        # ── Step 3: DA (device-assisted) posterior gate ──
-        # V8 change: use the smoothed posterior, not the raw GRU spike, to
-        # decide whether DA should override the current state.
-        if da_label is not None:
-            if da_label == 0:
-                # DA says blood → hard reset: clear history and return certain blood.
-                self.posterior = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-                self.hiddens = [None] * len(self.models)
-                self.feat_history.clear()
-                return self.posterior.copy()
-
-            elif da_label in (1, 2):
-                # DA says clot or wall → trust DA when the posterior is still
-                # below the configured confidence threshold.
-                if self._posterior_should_override_da(self.posterior, da_label):
-                    self.posterior = self._make_da_probs(da_label)
-
         # ── Step 4: Post-EMA DA safety net ──
-        # Keep the same posterior-based rule after blending as an extra guard.
+        # After blending, if the posterior still disagrees with the DA label
+        # and the GRU wasn't confident enough, force the posterior to the DA label.
         if da_label in (1, 2):
             final_idx = np.argmax(self.posterior)
-            if final_idx != da_label and self._posterior_should_override_da(self.posterior, da_label, strict=True):
+            if final_idx != da_label and self._da_should_override_gru(probs, da_label, strict=True):
                 self.posterior = self._make_da_probs(da_label)
 
         return self.posterior.copy()
