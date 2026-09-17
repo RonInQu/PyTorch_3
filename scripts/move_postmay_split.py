@@ -37,35 +37,53 @@ def find_file_for_study_id(source_dir: Path, study_id: str) -> Path | None:
     return candidates[0]
 
 
-def move_selected_files(source_dir: Path, selected_ids: set[str], dest_dir: Path) -> tuple[int, list[str]]:
-    moved = 0
+def transfer_selected_files(
+    source_dir: Path,
+    selected_ids: set[str],
+    dest_dir: Path,
+    move_files: bool,
+) -> tuple[int, list[str]]:
+    transferred = 0
     missing: list[str] = []
     for study_id in sorted(selected_ids):
         src = find_file_for_study_id(source_dir, study_id)
         if src is None:
             missing.append(study_id)
             continue
-        shutil.move(str(src), str(dest_dir / src.name))
-        moved += 1
-    return moved, missing
+        dst = dest_dir / src.name
+        if move_files:
+            shutil.move(str(src), str(dst))
+        else:
+            shutil.copy2(src, dst)
+        transferred += 1
+    return transferred, missing
 
 
-def move_remaining_files(source_dir: Path, excluded_ids: set[str], dest_dir: Path) -> tuple[int, list[str]]:
-    moved = 0
+def transfer_remaining_files(
+    source_dir: Path,
+    excluded_ids: set[str],
+    dest_dir: Path,
+    move_files: bool,
+) -> tuple[int, list[str]]:
+    transferred = 0
     skipped: list[str] = []
     for src in sorted(source_dir.glob("*.parquet")):
         study_id = extract_study_id(src.name)
         if study_id is not None and study_id in excluded_ids:
             skipped.append(study_id)
             continue
-        shutil.move(str(src), str(dest_dir / src.name))
-        moved += 1
-    return moved, skipped
+        dst = dest_dir / src.name
+        if move_files:
+            shutil.move(str(src), str(dst))
+        else:
+            shutil.copy2(src, dst)
+        transferred += 1
+    return transferred, skipped
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Move test IDs from processedResults/testing and remaining training files from processedResults/training."
+        description="Copy test IDs from processedResults/testing and remaining training files from processedResults/training."
     )
     parser.add_argument(
         "--processed-root",
@@ -88,7 +106,12 @@ def main() -> None:
     parser.add_argument(
         "--no-clear-target",
         action="store_true",
-        help="Do not clear existing parquet files in destination folders before moving.",
+        help="Do not clear existing parquet files in destination folders before transfer.",
+    )
+    parser.add_argument(
+        "--move",
+        action="store_true",
+        help="Move files instead of copying them. Default behavior is copy.",
     )
     args = parser.parse_args()
 
@@ -116,12 +139,18 @@ def main() -> None:
         removed_train = clear_parquet_files(train_dest)
         print(f"Cleared destination files: test_data={removed_test}, training_data={removed_train}")
 
-    moved_test, missing_test = move_selected_files(testing_src, test_id_set, test_dest)
-    moved_train, skipped_from_training = move_remaining_files(training_src, test_id_set, train_dest)
+    transferred_test, missing_test = transfer_selected_files(
+        testing_src, test_id_set, test_dest, move_files=args.move
+    )
+    transferred_train, skipped_from_training = transfer_remaining_files(
+        training_src, test_id_set, train_dest, move_files=args.move
+    )
+
+    action_word = "Moved" if args.move else "Copied"
 
     print(f"Requested test IDs: {len(test_ids)}")
-    print(f"Moved to test_data: {moved_test}")
-    print(f"Moved to training_data: {moved_train}")
+    print(f"{action_word} to test_data: {transferred_test}")
+    print(f"{action_word} to training_data: {transferred_train}")
     print(f"Training files excluded because in test list: {len(skipped_from_training)}")
 
     if missing_test:

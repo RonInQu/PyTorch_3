@@ -359,9 +359,9 @@ def main():
     summary_path.write_text("\n".join(summary_lines), encoding="utf-8")
     print(f"\nWrote summary: {summary_path}")
     print("\nNext steps:")
-    print("  1. python src/data/fit_scaler_V9.py")
-    print("  2. python src/training/train_gru_V9.py --force-extract")
-    print("  3. python src/models/gru_torch_V9.py")
+    print("  1. python src/data/fit_scaler_V6.py")
+    print("  2. python src/training/train_gru_V6.py --force-extract")
+    print("  3. python src/models/gru_torch_V6.py")
 
 
 if __name__ == "__main__":
