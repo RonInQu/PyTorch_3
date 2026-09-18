@@ -1,6 +1,6 @@
-# fit_scaler_V6.py
+# fit_scaler_V8.py
 """
-Fits the StandardScaler for clot detection features — V6.
+Fits the StandardScaler for clot detection features — V8.
 Uses ClotFeatureExtractor.compute_features_from_array() for efficient batch extraction.
 Vectorized EMA via scipy.signal.lfilter (no per-sample Python loop).
 """
@@ -13,10 +13,14 @@ from pathlib import Path
 import os
 import sys
 # from tqdm import tqdm
-import seaborn as sns
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from scipy.signal import lfilter
+
+try:
+    import seaborn as sns
+except ImportError:
+    sns = None
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 os.environ["PYARROW_IGNORE_TIMEZONE"] = "1"
@@ -29,14 +33,16 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # ================= CONSTANTS =================
 SAMPLE_RATE = 150
 
-# ================= IMPORT FROM gru_torch_V6 =================
-from src.models.gru_torch_V6 import FEATURE_SET, TOTAL_FEATURES, \
+# ================= IMPORT FROM gru_torch_V8 =================
+from src.models.gru_torch_V8 import FEATURE_SET, TOTAL_FEATURES, \
     ClotFeatureExtractor, SEQ_LEN, WINDOW_SEC, active_idx, active_dim, dim_str
 
-from src.training.train_gru_V6 import STRIDE_SAMPLES
+from src.training.train_gru_V8 import STRIDE_SAMPLES
 
 # ================= Derived CONFIG =================
-OUTPUT_SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
+DEFAULT_OUTPUT_SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
+OUTPUT_SCALER_PATH = Path(os.environ.get("PYTORCH3_SCALER_PATH", str(DEFAULT_OUTPUT_SCALER_PATH)))
+OUTPUT_SCALER_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 print("Scaler config:")
 print(f"   FEATURE_SET     = {FEATURE_SET}")
@@ -61,7 +67,10 @@ _B_SLOW = np.array([ALPHA_SLOW])
 _A_SLOW = np.array([1.0, -(1.0 - ALPHA_SLOW)])
 
 # ================= Main Scaler Fitting =================
-TRAINING_DATA_DIR = PROJECT_ROOT / "training_data"
+TRAINING_DATA_DIR = Path(os.environ.get(
+    "PYTORCH3_TRAINING_DATA_DIR",
+    str(PROJECT_ROOT / "training_data"),
+))
 
 print(f"\nLooking for parquet files in: {TRAINING_DATA_DIR}")
 
@@ -160,19 +169,22 @@ print(f"   Std : {X_scaled.std():.6f}   (should be very close to 1)")
 
 # Save the fitted scaler
 joblib.dump(scaler, OUTPUT_SCALER_PATH)
-print(f"\n✅ Scaler fitted and saved → {OUTPUT_SCALER_PATH}")
+print(f"\n[OK] Scaler fitted and saved -> {OUTPUT_SCALER_PATH}")
 
 # ================= Feature Correlation Heatmap =================
-print("\nGenerating feature correlation heatmap...")
-df_feat = pd.DataFrame(X_scaled, columns=[f"f{i}" for i in range(X_scaled.shape[1])])
-corr_matrix = df_feat.corr().abs()
+if sns is not None:
+    print("\nGenerating feature correlation heatmap...")
+    df_feat = pd.DataFrame(X_scaled, columns=[f"f{i}" for i in range(X_scaled.shape[1])])
+    corr_matrix = df_feat.corr().abs()
 
-plt.figure(figsize=(14, 12))
-sns.heatmap(corr_matrix, annot=False, cmap='coolwarm', vmin=0, vmax=1, square=True)
-plt.title(f"Feature Correlation Heatmap ({X_scaled.shape[1]} features)")
-plt.tight_layout()
-plt.savefig("feature_correlation_heatmap.png", dpi=300, bbox_inches='tight')
-plt.close()
-print("   Saved → feature_correlation_heatmap.png")
+    plt.figure(figsize=(14, 12))
+    sns.heatmap(corr_matrix, annot=False, cmap='coolwarm', vmin=0, vmax=1, square=True)
+    plt.title(f"Feature Correlation Heatmap ({X_scaled.shape[1]} features)")
+    plt.tight_layout()
+    plt.savefig("feature_correlation_heatmap.png", dpi=300, bbox_inches='tight')
+    plt.close()
+    print("   Saved -> feature_correlation_heatmap.png")
+else:
+    print("\nSkipping feature correlation heatmap because seaborn is not installed.")
 
 print("\nScaler fitting complete.")

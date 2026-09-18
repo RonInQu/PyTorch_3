@@ -1,7 +1,7 @@
 # #%%
-# train_gru_V6.py
+# train_gru_V8.py
 """
-Training script for clot detection — V6 (GRU on features).
+Training script for clot detection — V8 (GRU on features).
 Uses ClotFeatureExtractor.compute_features_from_array() for efficient cache building.
 Vectorized EMA via scipy.signal.lfilter (cumulative from run start).
 """
@@ -32,12 +32,12 @@ from sklearn.metrics import f1_score, confusion_matrix
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Import from gru_torch_V6 (single source of truth)
-# from src.models.gru_torch_V6 import ClotFeatureExtractor, ClotGRU, \
+# Import from gru_torch_V8 (single source of truth)
+# from src.models.gru_torch_V8 import ClotFeatureExtractor, ClotGRU, \
 #     FEATURE_SET, SEQ_LEN, WINDOW_SEC, \
 #     active_idx, active_dim, dim_str
     
-from src.models.gru_torch_V6 import ClotFeatureExtractor, ClotGRU, \
+from src.models.gru_torch_V8 import ClotFeatureExtractor, ClotGRU, \
     FEATURE_SET, SEQ_LEN, WINDOW_SEC, \
     active_idx, active_dim, dim_str    
 
@@ -69,11 +69,23 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 os.environ["PYARROW_IGNORE_TIMEZONE"] = "1"
 
 # Paths
-DATA_DIR = PROJECT_ROOT / "training_data"
-TEST_DIR = PROJECT_ROOT / "test_data"
+DATA_DIR = Path(os.environ.get(
+    "PYTORCH3_TRAINING_DATA_DIR",
+    str(PROJECT_ROOT / "training_data"),
+))
+TEST_DIR = Path(os.environ.get(
+    "PYTORCH3_TEST_DATA_DIR",
+    str(PROJECT_ROOT / "test_data"),
+))
 
-SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
-CACHE_DIR = PROJECT_ROOT / "cache"
+DEFAULT_SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
+SCALER_PATH = Path(os.environ.get("PYTORCH3_SCALER_PATH", str(DEFAULT_SCALER_PATH)))
+CACHE_DIR = Path(os.environ.get("PYTORCH3_CACHE_DIR", str(PROJECT_ROOT / "cache")))
+MODEL_OUTPUT_DIR = Path(os.environ.get(
+    "PYTORCH3_MODEL_OUTPUT_DIR",
+    str(PROJECT_ROOT / "src" / "training"),
+))
+SKIP_AUTO_SAVE_VERSION = os.environ.get("PYTORCH3_SKIP_SAVE_VERSION", "0") == "1"
 
 CLASS_NAMES = ['blood', 'clot', 'wall']
 CLINICAL_WEIGHTS = [1.0, 1.0, 1.0]
@@ -247,7 +259,7 @@ def load_or_extract_features(force_extract: bool = False):
 
         print("Caching features...")
         np.savez_compressed(CACHE_FILE, X_seq=X_seq, y=y, groups=groups)
-        print(f"Saved cache → {CACHE_FILE}")
+        print(f"Saved cache -> {CACHE_FILE}")
 
     # Scaling
     print("Loading scaler and scaling sequences...")
@@ -261,11 +273,11 @@ def load_or_extract_features(force_extract: bool = False):
     nan_count = np.isnan(X_scaled).sum()
     inf_count = np.isinf(X_scaled).sum()
     if nan_count > 0 or inf_count > 0:
-        print(f"  WARNING: {nan_count} NaN, {inf_count} Inf values in scaled data — replacing with 0")
+        print(f"  WARNING: {nan_count} NaN, {inf_count} Inf values in scaled data - replacing with 0")
         X_scaled = np.nan_to_num(X_scaled, nan=0.0, posinf=0.0, neginf=0.0)
 
-    assert np.abs(X_scaled.mean()) < 0.1, f"Scaling failed — mean should be ~0 (got {X_scaled.mean():.4f})"
-    assert 0.6 < X_scaled.std() < 1.4, f"Scaling failed — std should be ~1 (got {X_scaled.std():.4f})"
+    assert np.abs(X_scaled.mean()) < 0.1, f"Scaling failed - mean should be ~0 (got {X_scaled.mean():.4f})"
+    assert 0.6 < X_scaled.std() < 1.4, f"Scaling failed - std should be ~1 (got {X_scaled.std():.4f})"
     print("Scaling check passed")
 
     return X_scaled, y, groups, scaler
@@ -366,7 +378,7 @@ def train_fold(model, train_loader, val_loader, class_weights):
             best_f1 = f1_macro
             best_state = model.state_dict().copy()
             patience_cnt = 0
-            print("  ← new best")
+            print("  <- new best")
         else:
             patience_cnt += 1
             print("")
@@ -384,6 +396,7 @@ def train_fold(model, train_loader, val_loader, class_weights):
 
 def main():
     set_print_options()
+    MODEL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     print("=" * 70)
     print("STARTING TRAINING")
@@ -499,32 +512,32 @@ def main():
         # Save every seed
         if best_state_this_seed is not None:
             model_filename = f"clot_gru_trained_seq{SEQ_LEN}_{FEATURE_SET}_seed{seed}_f1{best_f1_this_seed:.4f}.pt"
-            save_path = PROJECT_ROOT / "src" / "training" / model_filename
+            save_path = MODEL_OUTPUT_DIR / model_filename
 
             torch.save(best_state_this_seed, save_path)
 
-            print(f"   ✅ Saved model for seed {seed}")
+            print(f"   [OK] Saved model for seed {seed}")
             print(f"      Filename: {model_filename}")
             print(f"      F1-macro: {best_f1_this_seed:.4f}")
             print(f"      Path: {save_path}")
         else:
-            print(f"   ⚠️  No model saved for seed {seed} (best_state was None)")
+            print(f"   [WARN] No model saved for seed {seed} (best_state was None)")
 
         if best_f1_this_seed > best_global_f1:
             best_global_f1 = best_f1_this_seed
             best_state_global = best_state_this_seed
             best_seed = seed
-            print(f"   → New global best! (Seed {seed})")
+            print(f"   -> New global best! (Seed {seed})")
 
     # Save overall best
     if best_state_global is not None:
-        latest_path = PROJECT_ROOT / "src" / "training" / f"clot_gru_trained_seq{SEQ_LEN}_{FEATURE_SET}.pt"
+        latest_path = MODEL_OUTPUT_DIR / f"clot_gru_trained_seq{SEQ_LEN}_{FEATURE_SET}.pt"
         torch.save(best_state_global, latest_path)
-        print(f"\n✅ Also saved overall best as: clot_gru_trained_seq{SEQ_LEN}_{FEATURE_SET}.pt")
+        print(f"\n[OK] Also saved overall best as: clot_gru_trained_seq{SEQ_LEN}_{FEATURE_SET}.pt")
 
-        generic_path = PROJECT_ROOT / "src" / "training" / "clot_gru_trained.pt"
+        generic_path = MODEL_OUTPUT_DIR / "clot_gru_trained.pt"
         torch.save(best_state_global, generic_path)
-        print(f"✅ Also saved as: clot_gru_trained.pt")
+        print(f"[OK] Also saved as: clot_gru_trained.pt")
 
     print("\n" + "="*70)
     print("ALL SEEDS FINISHED")
@@ -532,8 +545,11 @@ def main():
     print(f"Global best F1-macro: {best_global_f1:.4f} (Seed {best_seed})")
 
     # ── Auto-save versioned snapshot ──
-    from src.data.save_version import save_version
-    save_version(f1=best_global_f1, note=f"Best seed {best_seed}")
+    if not SKIP_AUTO_SAVE_VERSION:
+        from src.data.save_version_V8 import save_version
+        save_version(f1=best_global_f1, note=f"Best seed {best_seed}")
+    else:
+        print("Skipping save_version_V8 because PYTORCH3_SKIP_SAVE_VERSION=1")
 
 if __name__ == "__main__":
     main()

@@ -34,7 +34,8 @@ import matplotlib.pyplot as plt
 
 
 DEFAULT_SOURCE_DIR = Path(
-    r"C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\19August2026\processedResults\testing"
+    # r"C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\19August2026\processedResults\testing"
+    r"C:\Users\RonaldKurnik\Inquis Medical\DataScience - Documents\Working\Ronald Kurnik\19August2026\InputFolder\processedResults_V8_truthmatch\testing"
 )
 BASE_DIR = Path("analysis_data_drift") / "da_gt_disagreement_review"
 SUMMARY_CSV = BASE_DIR / "da_gt_file_summary.csv"
@@ -109,9 +110,11 @@ def _downsample_idx(mask: np.ndarray, max_points: int) -> np.ndarray:
     return idx[keep]
 
 
-def choose_top_files(summary_csv: Path, top_n: int) -> list[str]:
+def choose_top_files(summary_csv: Path, top_n: int | None) -> list[str]:
     df = pd.read_csv(summary_csv)
     df = df.sort_values(["n_mismatch_samples", "mismatch_frac_in_clot_wall"], ascending=False)
+    if top_n is None or top_n <= 0:
+        return df["file"].astype(str).tolist()
     return df.head(top_n)["file"].astype(str).tolist()
 
 
@@ -560,7 +563,7 @@ def plot_segment_similarity_hexbin_html(cloud: pd.DataFrame, out_path: Path) -> 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-dir", type=Path, default=DEFAULT_SOURCE_DIR)
-    parser.add_argument("--top-files", type=int, default=24)
+    parser.add_argument("--top-files", type=int, default=None)
     args = parser.parse_args()
 
     if not SUMMARY_CSV.exists() or not SEGMENTS_CSV.exists():

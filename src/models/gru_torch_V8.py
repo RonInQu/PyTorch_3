@@ -570,8 +570,10 @@ active_dim = len(active_idx)
 _idx_hash = hash(tuple(active_idx)) % 0xFFFF
 dim_str = f"{FEATURE_SET}_{active_dim}_{_idx_hash:04x}"
 
-SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
-MODEL_PATH = PROJECT_ROOT / "src" / "training" / "clot_gru_trained.pt"
+DEFAULT_SCALER_PATH = PROJECT_ROOT / "src" / "data" / f"clot_feature_scaler_5s_seq{SEQ_LEN}_{dim_str}.pkl"
+DEFAULT_MODEL_PATH = PROJECT_ROOT / "src" / "training" / "clot_gru_trained.pt"
+SCALER_PATH = Path(os.environ.get("PYTORCH3_SCALER_PATH", str(DEFAULT_SCALER_PATH)))
+MODEL_PATH = Path(os.environ.get("PYTORCH3_MODEL_PATH", str(DEFAULT_MODEL_PATH)))
 
 # ── Ensemble configuration ──
 # Set ENSEMBLE_SEEDS to a list of seeds to average multiple models' outputs.
@@ -580,8 +582,11 @@ ENSEMBLE_SEEDS = None  # Set to [42, 123, 456, 789, 2026] for ensemble inference
 USE_DENOISED = False   # Set True to use pulse-subtracted data from test_data_denoised/
 SAVE_PARQUET = True    # Set True to save detection_results .parquet files
 SAVE_CSV = False       # Set True to save detection_results .csv files
-TEST_DATA_DIR = PROJECT_ROOT / ("test_data_denoised" if USE_DENOISED else "test_data")
-OUTPUT_FOLDER = PROJECT_ROOT / "inference_deploy" / "Results"
+DEFAULT_TEST_DATA_DIR = PROJECT_ROOT / ("test_data_denoised" if USE_DENOISED else "test_data")
+DEFAULT_OUTPUT_FOLDER = PROJECT_ROOT / "inference_deploy" / "Results"
+TEST_DATA_DIR = Path(os.environ.get("PYTORCH3_TEST_DATA_DIR", str(DEFAULT_TEST_DATA_DIR)))
+OUTPUT_FOLDER = Path(os.environ.get("PYTORCH3_OUTPUT_FOLDER", str(DEFAULT_OUTPUT_FOLDER)))
+OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -1052,9 +1057,9 @@ def main():
         g_override_mask = (ml_arr != da_arr)
         g_n_overrides = g_override_mask.sum()
 
-        summary_lines.append(f"\n{'─'*70}")
+        summary_lines.append(f"\n{'-'*70}")
         summary_lines.append(f"GLOBAL OVERRIDE ANALYSIS")
-        summary_lines.append(f"{'─'*70}")
+        summary_lines.append(f"{'-'*70}")
         summary_lines.append(f"Total overrides across all studies: {g_n_overrides}")
 
         if g_n_overrides > 0:

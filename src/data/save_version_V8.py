@@ -1,16 +1,16 @@
 """
-save_version.py — Snapshot a trained pipeline version.
+save_version_V8.py — Snapshot a trained V8 pipeline version.
 
 Copies model, scaler, and train/test split into a timestamped folder
 under  versions/  at the project root.
 
 Usage (standalone):
-    python src/data/save_version.py                       # auto-detect latest
-    python src/data/save_version.py --tag "baseline_v1"   # custom tag
-    python src/data/save_version.py --note "First 62/14 split, +24k net benefit"
+    python src/data/save_version_V8.py                       # auto-detect latest
+    python src/data/save_version_V8.py --tag "baseline_v1"   # custom tag
+    python src/data/save_version_V8.py --note "First 62/14 split, +24k net benefit"
 
-Usage (from train_gru_V6.py):
-    from src.data.save_version import save_version
+Usage (from train_gru_V8.py):
+    from src.data.save_version_V8 import save_version
     save_version(f1=0.8091, tag="after_retrain", note="Added 5 new studies")
 """
 
@@ -45,7 +45,7 @@ def save_version(
     """Snapshot the current model + scaler + split into versions/<timestamp>/."""
 
     # ── lazy import so the module can be used without torch installed ──
-    from src.models.gru_torch_V6 import (
+    from src.models.gru_torch_V8 import (
         FEATURE_SET, SEQ_LEN, active_dim, dim_str,
         WINDOW_SEC, REPORT_INTERVAL_MS, TEMPERATURE,
         GRU_OVERRIDE_THRD_CLOT, GRU_OVERRIDE_THRD_WALL,
@@ -54,7 +54,7 @@ def save_version(
         DA_LABEL_CONFIDENCE,
         INIT_BLOOD_PROB, INIT_CLOT_PROB, INIT_WALL_PROB,
     )
-    from src.training.train_gru_V6 import (
+    from src.training.train_gru_V8 import (
         SEEDS_TO_TRY, STRIDE_SAMPLES, BATCH_SIZE, N_EPOCHS,
         PATIENCE, LR, WEIGHT_DECAY, CLINICAL_WEIGHTS,
     )
@@ -88,10 +88,10 @@ def save_version(
 
     # ── copy pipeline source scripts for reproducibility ──
     script_copies = [
-        PROJECT_ROOT / "src" / "data" / "Labeling_5Names_V6.py",
-        PROJECT_ROOT / "src" / "data" / "fit_scaler_V6.py",
-        PROJECT_ROOT / "src" / "training" / "train_gru_V6.py",
-        PROJECT_ROOT / "src" / "models" / "gru_torch_V6.py",
+        PROJECT_ROOT / "src" / "data" / "fit_scaler_V8.py",
+        PROJECT_ROOT / "src" / "data" / "save_version_V8.py",
+        PROJECT_ROOT / "src" / "training" / "train_gru_V8.py",
+        PROJECT_ROOT / "src" / "models" / "gru_torch_V8.py",
     ]
     for src_script in script_copies:
         if src_script.exists():
@@ -184,7 +184,7 @@ def save_version(
     manifest.write_text("\n".join(lines), encoding="utf-8")
 
     print(f"\n{'='*60}")
-    print(f"  VERSION SAVED  →  {version_dir.relative_to(PROJECT_ROOT)}")
+    print(f"  VERSION SAVED  ->  {version_dir.relative_to(PROJECT_ROOT)}")
     print(f"{'='*60}")
     print(f"  Model:   {model_path.name}")
     print(f"  Scaler:  {scaler_path.name}")
